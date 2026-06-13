@@ -4,8 +4,18 @@ set -euo pipefail
 IFS=$'\n\t'
 
 SCRIPT_NAME="$(basename -- "$0")"
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-SCRIPT_PATH="${SCRIPT_DIR}/${SCRIPT_NAME}"
+
+# Resolve symlinks so the script finds its sibling templates/ directory even when
+# invoked through a symlink (e.g. ~/.local/bin/vibe-init -> .../vibe-init.sh).
+# pwd -P alone follows the directory but not a symlinked script file.
+SCRIPT_SOURCE="${BASH_SOURCE[0]}"
+while [[ -L "${SCRIPT_SOURCE}" ]]; do
+  script_link_dir="$(cd -P -- "$(dirname -- "${SCRIPT_SOURCE}")" && pwd)"
+  SCRIPT_SOURCE="$(readlink -- "${SCRIPT_SOURCE}")"
+  [[ "${SCRIPT_SOURCE}" != /* ]] && SCRIPT_SOURCE="${script_link_dir}/${SCRIPT_SOURCE}"
+done
+SCRIPT_DIR="$(cd -P -- "$(dirname -- "${SCRIPT_SOURCE}")" && pwd)"
+SCRIPT_PATH="${SCRIPT_SOURCE}"
 TEMPLATE_ROOT="${SCRIPT_DIR}/templates"
 
 ASSUME_DEFAULTS=0
