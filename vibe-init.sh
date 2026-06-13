@@ -515,7 +515,7 @@ install_and_init_trellis() {
   fi
 
   info "initializing Trellis in ${project_dir}"
-  run_in_dir "${project_dir}" trellis init -u "${developer_name}" "${platform_args[@]}"
+  run_in_dir "${project_dir}" trellis init --skip-existing -u "${developer_name}" "${platform_args[@]}"
 }
 
 resolve_template_dir() {
@@ -591,11 +591,17 @@ main() {
     fi
   fi
 
+  resolve_template_dir "${install_trellis}"
+
   if [[ "${install_trellis}" -eq 1 ]]; then
+    # Seed AGENTS.md before trellis init. Otherwise trellis creates its own
+    # AGENTS.md (only the managed TRELLIS block) and our guidance is lost.
+    # Writing ours first, then running trellis init with --skip-existing,
+    # keeps our content outside the block while trellis still owns the block.
+    copy_or_write_placeholder "AGENTS.md" "${project_dir}/AGENTS.md" "$(agents_placeholder)"
     install_and_init_trellis "${project_dir}"
   fi
 
-  resolve_template_dir "${install_trellis}"
   write_project_placeholders "${project_dir}"
 
   info "done"
