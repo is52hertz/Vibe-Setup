@@ -6,7 +6,7 @@ IFS=$'\n\t'
 SCRIPT_NAME="$(basename -- "$0")"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 SCRIPT_PATH="${SCRIPT_DIR}/${SCRIPT_NAME}"
-DEFAULT_TEMPLATE_DIR="${SCRIPT_DIR}/templates"
+TEMPLATE_ROOT="${SCRIPT_DIR}/templates"
 
 ASSUME_DEFAULTS=0
 DRY_RUN=0
@@ -14,7 +14,8 @@ PROJECT_NAME=""
 TRELLIS_CHOICE=""
 DEVELOPER_NAME=""
 TRELLIS_PLATFORMS=""
-TEMPLATE_DIR="${DEFAULT_TEMPLATE_DIR}"
+TEMPLATE_DIR=""
+TEMPLATE_DIR_EXPLICIT=0
 
 usage() {
   cat <<EOF
@@ -26,7 +27,9 @@ Options:
   --trellis yes|no         Whether to install/init Trellis.
   --developer-name NAME    Developer identity passed to: trellis init -u NAME.
   --platforms "FLAGS"      Trellis platform flags, for example: "--claude --codex".
-  --template-dir DIR       Optional template directory. Missing templates use placeholders.
+  --template-dir DIR       Override the template directory. Default: templates/trellis when
+                           Trellis is enabled, otherwise templates/base. Missing files fall
+                           back to built-in placeholders.
   -y, --yes                Accept safe defaults for prompts.
   --dry-run                Print actions without writing files or running installers.
   -h, --help               Show this help.
@@ -99,10 +102,12 @@ while [[ $# -gt 0 ]]; do
     --template-dir)
       require_arg "$1" "${2:-}"
       TEMPLATE_DIR="$2"
+      TEMPLATE_DIR_EXPLICIT=1
       shift 2
       ;;
     --template-dir=*)
       TEMPLATE_DIR="${1#*=}"
+      TEMPLATE_DIR_EXPLICIT=1
       shift
       ;;
     -y|--yes)
@@ -513,6 +518,24 @@ install_and_init_trellis() {
   run_in_dir "${project_dir}" trellis init -u "${developer_name}" "${platform_args[@]}"
 }
 
+resolve_template_dir() {
+  local install_trellis="$1"
+
+  if [[ "${TEMPLATE_DIR_EXPLICIT}" -eq 1 ]]; then
+    return
+  fi
+
+  if [[ "${install_trellis}" -eq 1 ]]; then
+    TEMPLATE_DIR="${TEMPLATE_ROOT}/trellis"
+  else
+    TEMPLATE_DIR="${TEMPLATE_ROOT}/base"
+  fi
+
+  if [[ ! -d "${TEMPLATE_DIR}" ]]; then
+    warn "template dir not found: ${TEMPLATE_DIR}; falling back to built-in placeholders"
+  fi
+}
+
 write_project_placeholders() {
   local project_dir="$1"
 
@@ -572,6 +595,7 @@ main() {
     install_and_init_trellis "${project_dir}"
   fi
 
+  resolve_template_dir "${install_trellis}"
   write_project_placeholders "${project_dir}"
 
   info "done"
