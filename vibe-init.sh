@@ -514,8 +514,19 @@ install_and_init_trellis() {
     IFS=' ' read -r -a platform_args <<< "${normalized_platforms}"
   fi
 
+  local init_args=()
+  if [[ "${ASSUME_DEFAULTS}" -eq 1 || ! -t 0 ]]; then
+    # Non-interactive: -y accepts trellis prompts (e.g. spec template) and
+    # already implies skip-existing, so our seeded AGENTS.md is preserved.
+    init_args=(-y)
+  else
+    # Interactive: skip our seeded files silently but still let the user
+    # pick a spec template.
+    init_args=(--skip-existing)
+  fi
+
   info "initializing Trellis in ${project_dir}"
-  run_in_dir "${project_dir}" trellis init --skip-existing -u "${developer_name}" "${platform_args[@]}"
+  run_in_dir "${project_dir}" trellis init "${init_args[@]}" -u "${developer_name}" "${platform_args[@]}"
 }
 
 resolve_template_dir() {
