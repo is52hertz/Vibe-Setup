@@ -1,0 +1,4 @@
+# Test scaffolding output: folders whose name starts and ends with a digit
+# (e.g. 1/, 2/, 12/, 1abc9/), created by running ./vibe-init.sh manually.
+[0-9]/
+[0-9]*[0-9]/
