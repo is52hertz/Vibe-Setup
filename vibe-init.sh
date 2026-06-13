@@ -16,6 +16,7 @@ DEVELOPER_NAME=""
 TRELLIS_PLATFORMS=""
 TEMPLATE_DIR=""
 TEMPLATE_DIR_EXPLICIT=0
+TRELLIS_INITIALIZED=0
 
 usage() {
   cat <<EOF
@@ -70,6 +71,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --name=*)
       PROJECT_NAME="${1#*=}"
+      require_arg "--name" "${PROJECT_NAME}"
       shift
       ;;
     --trellis)
@@ -79,6 +81,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --trellis=*)
       TRELLIS_CHOICE="${1#*=}"
+      require_arg "--trellis" "${TRELLIS_CHOICE}"
       shift
       ;;
     --developer-name)
@@ -88,6 +91,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --developer-name=*)
       DEVELOPER_NAME="${1#*=}"
+      require_arg "--developer-name" "${DEVELOPER_NAME}"
       shift
       ;;
     --platforms)
@@ -97,6 +101,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --platforms=*)
       TRELLIS_PLATFORMS="${1#*=}"
+      require_arg "--platforms" "${TRELLIS_PLATFORMS}"
       shift
       ;;
     --template-dir)
@@ -107,6 +112,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --template-dir=*)
       TEMPLATE_DIR="${1#*=}"
+      require_arg "--template-dir" "${TEMPLATE_DIR}"
       TEMPLATE_DIR_EXPLICIT=1
       shift
       ;;
@@ -369,10 +375,6 @@ agents_placeholder() {
 
 - Do not read, print, or commit secrets from `.env*`, credentials, private keys, or local-only files.
 - Ask before destructive operations, production deployments, or broad dependency upgrades.
-
-## Trellis
-
-- If `.trellis/` exists, follow `.trellis/workflow.md` and use the active task context.
 EOF
 }
 
@@ -573,6 +575,11 @@ install_and_init_trellis() {
     IFS=' ' read -r -a platform_args <<< "${normalized_platforms}"
   fi
 
+  # Seed AGENTS.md before trellis init so trellis (skip-existing) preserves our
+  # guidance and only manages the TRELLIS block inside it. Done here, after the
+  # install gate, so a declined install never leaves a stray TRELLIS block.
+  copy_or_write_placeholder "AGENTS.md" "${project_dir}/AGENTS.md" "$(agents_placeholder)"
+
   local init_args=()
   if [[ "${ASSUME_DEFAULTS}" -eq 1 || ! -t 0 ]]; then
     # Non-interactive: -y accepts trellis prompts (e.g. spec template) and
@@ -585,9 +592,12 @@ install_and_init_trellis() {
   fi
 
   info "initializing Trellis in ${project_dir}"
-  run_in_dir "${project_dir}" trellis init "${init_args[@]}" -u "${developer_name}" "${platform_args[@]}"
+  # ${platform_args[@]+...} expands to nothing (not an error) when the array is
+  # empty under set -u on bash 3.2.
+  run_in_dir "${project_dir}" trellis init "${init_args[@]}" -u "${developer_name}" ${platform_args[@]+"${platform_args[@]}"}
 
   merge_secret_deny_rules "${project_dir}"
+  TRELLIS_INITIALIZED=1
 }
 
 resolve_template_dir() {
@@ -650,7 +660,6 @@ main() {
   local install_trellis=0
 
   project_dir="$(choose_project_dir)"
-  ensure_dir "${project_dir}"
 
   if [[ -n "${TRELLIS_CHOICE}" ]]; then
     normalized_trellis_choice="$(normalize_yes_no "${TRELLIS_CHOICE}")" || die "--trellis must be yes or no"
@@ -663,15 +672,15 @@ main() {
     fi
   fi
 
-  resolve_template_dir "${install_trellis}"
-
   if [[ "${install_trellis}" -eq 1 ]]; then
-    # Seed AGENTS.md before trellis init. Otherwise trellis creates its own
-    # AGENTS.md (only the managed TRELLIS block) and our guidance is lost.
-    # Writing ours first, then running trellis init with --skip-existing,
-    # keeps our content outside the block while trellis still owns the block.
-    copy_or_write_placeholder "AGENTS.md" "${project_dir}/AGENTS.md" "$(agents_placeholder)"
+    resolve_template_dir 1
     install_and_init_trellis "${project_dir}"
+  fi
+
+  # Use the non-Trellis template set unless Trellis was actually initialized
+  # (e.g. the user chose Trellis but declined to install it).
+  if [[ "${TRELLIS_INITIALIZED}" -eq 0 ]]; then
+    resolve_template_dir 0
   fi
 
   write_project_placeholders "${project_dir}"
