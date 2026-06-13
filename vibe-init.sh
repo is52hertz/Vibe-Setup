@@ -22,7 +22,10 @@ ASSUME_DEFAULTS=0
 DRY_RUN=0
 PROJECT_NAME=""
 TRELLIS_CHOICE=""
-DEVELOPER_NAME=""
+# Honor a default developer name from the environment (e.g. export DEVELOPER_NAME
+# in ~/.zshrc). The --developer-name flag still overrides it; an empty value falls
+# back to auto-detection (git config user.name, then $USER).
+DEVELOPER_NAME="${DEVELOPER_NAME:-}"
 TRELLIS_PLATFORMS=""
 TEMPLATE_DIR=""
 TEMPLATE_DIR_EXPLICIT=0
@@ -37,6 +40,7 @@ Options:
   --name NAME              Project folder name when current directory is not empty.
   --trellis yes|no         Whether to install/init Trellis.
   --developer-name NAME    Developer identity passed to: trellis init -u NAME.
+                           Defaults to \$DEVELOPER_NAME, then git user.name, then \$USER.
   --platforms "FLAGS"      Trellis platform flags, for example: "--claude --codex".
   --template-dir DIR       Override the template directory. Default: templates/trellis when
                            Trellis is enabled, otherwise templates/base. Missing files fall
