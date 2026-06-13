@@ -23,14 +23,20 @@ Tool-specific files (`CLAUDE.md`) point here.
 
 ## Development Rules
 
+### Two-Step Confirmation First
+- Never start the moment a requirement is stated or changed. Every new or modified requirement first passes through an understand-and-confirm step before any code is written. The only exception is trivial mechanical actions whose intent is obvious (e.g. `git push`, fixing a typo, a one-line rename).
+- **Step one — reflect and surface, always in the open before building:**
+  - Judge whether the request is sound: is it safe? is it efficient? does it fit the project's scale?
+  - Consider whether a better approach exists than the one asked for.
+  - State your full understanding of the request, your analysis of it (risks, tradeoffs, anything ill-advised), and your concrete recommendation.
+- **Step two — act on the outcome:**
+  - If the request is uncertain (multiple approaches with tradeoffs, may affect other features, or ill-suited to the project's scale), wait for the user's confirmation before modifying code.
+  - If there is a clearly optimal and safe path, you may proceed without waiting for confirmation — but conspicuously notify the user that you are doing so up front, and on completion state plainly what you changed and why it was the better path.
+  - Push back on any request that compromises security, correctness, or runtime efficiency, even when explicitly asked.
+
 ### Scope Discipline
 - Each task must stay within its stated scope. Do not add, refactor, or "improve" anything outside the current request.
 - If the current task logically depends on another unbuilt feature, ask the user before implementing it. Never silently introduce adjacent functionality.
-
-### Challenge & Confirm Before Building
-- Uncertain changes (multiple approaches with tradeoffs, changes that may affect other features, or changes unsuited to the project's scale) must be confirmed with the user before modifying code.
-- When there is a clearly optimal approach (security, efficiency), inform the user and proceed without waiting for confirmation.
-- Push back on any request that compromises security, correctness, or runtime efficiency.
 
 ### Coding Standards
 <!-- TODO: Replace the bullets below with this project's real standards. Keep each one concrete and enforceable, not a platitude. Delete what doesn't apply. -->
