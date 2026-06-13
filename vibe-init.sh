@@ -468,6 +468,65 @@ install_trellis_installer() {
   info "installed Trellis: ${installed_version}"
 }
 
+merge_secret_deny_rules() {
+  local project_dir="$1"
+  local settings="${project_dir}/.claude/settings.json"
+  local template_settings="${TEMPLATE_DIR}/.claude/settings.json"
+
+  # The template's settings.json is the source of the deny rules. Trellis owns
+  # the generated .claude/settings.json (hooks/env), so we merge our
+  # permissions.deny into it rather than overwriting it.
+  if [[ ! -f "${template_settings}" ]]; then
+    return
+  fi
+
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    info "dry-run: merge permissions.deny from ${template_settings} into ${settings}"
+    return
+  fi
+
+  if [[ ! -f "${settings}" ]]; then
+    warn "trellis did not create ${settings}; skipping deny-rule merge"
+    return
+  fi
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    warn "python3 not found; skipping deny-rule merge into ${settings}"
+    return
+  fi
+
+  if python3 - "${settings}" "${template_settings}" <<'PY'
+import json, sys
+
+settings_path, template_path = sys.argv[1], sys.argv[2]
+
+with open(settings_path) as fh:
+    settings = json.load(fh)
+with open(template_path) as fh:
+    template = json.load(fh)
+
+deny = template.get("permissions", {}).get("deny", [])
+if not deny:
+    sys.exit(0)
+
+perms = settings.setdefault("permissions", {})
+existing = perms.setdefault("deny", [])
+added = [rule for rule in deny if rule not in existing]
+if not added:
+    sys.exit(0)
+
+existing.extend(added)
+with open(settings_path, "w") as fh:
+    json.dump(settings, fh, indent=2)
+    fh.write("\n")
+PY
+  then
+    info "merged secret-deny rules into ${settings}"
+  else
+    warn "failed to merge deny rules into ${settings}"
+  fi
+}
+
 install_and_init_trellis() {
   local project_dir="$1"
   local developer_name="${DEVELOPER_NAME}"
@@ -527,6 +586,8 @@ install_and_init_trellis() {
 
   info "initializing Trellis in ${project_dir}"
   run_in_dir "${project_dir}" trellis init "${init_args[@]}" -u "${developer_name}" "${platform_args[@]}"
+
+  merge_secret_deny_rules "${project_dir}"
 }
 
 resolve_template_dir() {
