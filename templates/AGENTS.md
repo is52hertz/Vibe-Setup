@@ -13,12 +13,13 @@ Tool-specific files (`CLAUDE.md`) point here.
 
 ## Product
 
-Relay is a native macOS (Swift / SwiftUI / AppKit) global application switcher — like Thor — with scene-based hotkey groups (Profiles). The user binds global hotkeys to target apps to launch / focus / hide / return-to-previous, and switches a whole set of bindings per workflow (e.g. Coding, Design, Writing). It is a single-user menu-bar agent with a small local dataset (a few Profiles and bindings stored as Codable JSON), targeting macOS 26.5+. There is no paid Apple Developer account: it runs un-sandboxed (it controls other apps), is for local / self-use, and is not aimed at the Mac App Store.
+<!-- TODO: One paragraph describing this project — what it is, who uses it, the platform/runtime target, and any defining constraints (single- vs multi-user, sandboxed or not, deployment target, scale). -->
 
 ## Project Phase
 
-- **Relay app (`Relay/`)**: v1 feature-complete (PR1–PR5) and manually tested; menu-bar agent plus a management `Window`.
-- **Project specs (`.trellis/spec/`)**: not yet authored — still generic templates; see the `00-bootstrap-guidelines` task.
+<!-- TODO: Current status of each app/package and of the project specs. -->
+- **<app/package name>**: TODO — what's built, what's tested.
+- **Project specs (`.trellis/spec/`)**: TODO — authored, or still generic templates.
 
 ## Development Rules
 
@@ -32,13 +33,11 @@ Relay is a native macOS (Swift / SwiftUI / AppKit) global application switcher �
 - Push back on any request that compromises security, correctness, or runtime efficiency.
 
 ### Coding Standards
-- **Source of truth & persistence**: `AppModel` (`@MainActor @Observable`) is the single in-memory source of truth. Persist as Codable JSON in Application Support (atomic write, debounced save). Data models are `nonisolated` Codable value types and must not import AppKit/SwiftUI. Keep persisted formats independent of third-party libraries (e.g. store Carbon key codes, not a library's internal type).
-- **Concurrency**: default actor isolation is `MainActor` (Swift 5 language mode). Types touching AppKit/SwiftUI stay on `MainActor`; `AppModel` and services must stay free of AppKit/SwiftUI so they remain unit-testable. Inject services via the composition root (`AppController`); do not use singletons.
-- **Global hotkeys**: register only the active Profile, via the `KeyboardShortcuts` package. Never use `CGEventTap` or global `NSEvent` monitors — they require Accessibility / Input Monitoring and are out of scope.
-- **Controlling other apps**: prefer public AppKit APIs — `NSWorkspace.openApplication`, `NSRunningApplication.hide/unhide`. From this background agent, bring an app forward with `openApplication(at: bundleURL)`, not `NSRunningApplication.activate(from: .current)` (cooperative activation silently fails for a non-frontmost agent). No private APIs.
-- **UI**: SwiftUI-first; bridge to AppKit only when required. The management UI must live in a `Window`, not the `Settings` scene (Settings drops custom toolbars). Use system controls, HIG spacing, light/dark, and full keyboard + VoiceOver. Rely on automatic Liquid Glass from standard containers on macOS 26.5 — do not hand-roll glass. Prefer modern surfaces (`.popover`) over the legacy `.help` tooltip for essential information.
-- **Permissions**: functionality takes priority over avoiding permissions. Permission-gated capabilities (e.g. Accessibility, used to minimize a target window) are allowed when they are the way to implement a feature — provided the permission is requested **lazily / on demand** (when the user opts into that feature, or first triggers it), **never at launch**. The app must stay fully functional without the permission; only the gated capability degrades, and it degrades safely (do nothing destructive + surface a one-time notice — never silently do the wrong thing). Note: Accessibility grants app-level access, not a per-feature scope. Global hotkeys still go through `KeyboardShortcuts` (no `CGEventTap` / global `NSEvent` monitors needed).
-- **Security boundary**: the app is un-sandboxed and can launch/activate arbitrary apps. Never add code that executes downloaded or arbitrary code, never use private APIs (only documented public AppKit + Accessibility attributes), and never expose any control surface beyond the local user's own machine.
+<!-- TODO: Replace the bullets below with this project's real standards. Keep each one concrete and enforceable, not a platitude. Delete what doesn't apply. -->
+- **Source of truth & persistence**: TODO — the single source of truth for state, and how/where it is persisted.
+- **Architecture & boundaries**: TODO — module/layer boundaries, dependency injection, what must stay free of UI/framework imports so it remains testable.
+- **Language / framework conventions**: TODO — follow existing conventions; note key idioms and any banned APIs or patterns.
+- **Security boundary**: TODO — the project's trust boundary; never execute downloaded or arbitrary code; never expose a control surface beyond the intended users.
 
 ### Verify & Commit
 - After any code change, run the project's verification (e.g. type-check / build / lint) across all affected packages.
