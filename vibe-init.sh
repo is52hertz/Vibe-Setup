@@ -72,6 +72,7 @@ Options:
   --developer-name NAME    Developer identity passed to: trellis init -u NAME.
                            Defaults to \$DEVELOPER_NAME, then git user.name, then \$USER.
   --platforms "FLAGS"      Trellis platform flags, for example: "--claude --codex".
+                           Use "none" (or "n") to pass no platform flags.
   --template-dir DIR       Override the template directory. Default: templates/trellis when
                            Trellis is enabled, otherwise templates/base. Missing files fall
                            back to built-in placeholders.
@@ -695,8 +696,16 @@ install_and_init_trellis() {
   validate_developer_name "${developer_name}"
 
   if [[ -z "${platform_input}" ]]; then
-    platform_input="$(ask_value "Trellis platform flags" "--claude --codex")"
+    platform_input="$(ask_value "Trellis platform flags ('n' or 'none' for no flags)" "--claude --codex")"
   fi
+
+  # 'n' / 'none' (any case) opts out: pass no platform flags to trellis init.
+  case "$(printf '%s' "${platform_input}" | tr '[:upper:]' '[:lower:]')" in
+    n|none)
+      info "no Trellis platform flags will be passed"
+      platform_input=""
+      ;;
+  esac
 
   normalized_platforms="${platform_input//,/ }"
   if [[ -n "${normalized_platforms// /}" ]]; then
