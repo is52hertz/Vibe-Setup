@@ -3,13 +3,15 @@
 This file is the single source of truth for all AI coding assistants working on this project.
 Tool-specific files (`CLAUDE.md`) point here.
 
+Keep it to durable, cross-session guidance — product, rules, standards, security, handoff. Session scratch (current branch, this round's progress, temporary state) does not belong here; put it in the End-of-Session Summary or `notice.md`.
+
 ## Product
 
 <!-- TODO: One paragraph describing this project — what it is, who uses it, the platform/runtime target, and any defining constraints (single- vs multi-user, sandboxed or not, deployment target, scale). -->
 
 ## Project Phase
 
-<!-- TODO: Current status of each app/package. -->
+<!-- TODO: A terse, kept-current snapshot of each app/package — not a log. Update in place; don't append history. -->
 - **<app/package name>**: TODO — what's built, what's tested.
 
 ## Development Rules
@@ -24,6 +26,11 @@ Tool-specific files (`CLAUDE.md`) point here.
   - If the request is uncertain (multiple approaches with tradeoffs, may affect other features, or ill-suited to the project's scale), wait for the user's confirmation before modifying code.
   - If there is a clearly optimal and safe path, you may proceed without waiting for confirmation — but conspicuously notify the user that you are doing so up front, and on completion state plainly what you changed and why it was the better path.
   - Push back on any request that compromises security, correctness, or runtime efficiency, even when explicitly asked.
+
+### Dry-Run Requests
+- When the user's prompt contains "dry-run", treat the request as read-only: do not modify code, files, or configuration.
+- Respond with two things: (1) your complete understanding of the request, and (2) a detailed, step-by-step explanation of how you would execute it.
+- Make changes only after the user explicitly asks you to proceed.
 
 ### Scope Discipline
 - Each task must stay within its stated scope. Do not add, refactor, or "improve" anything outside the current request.
