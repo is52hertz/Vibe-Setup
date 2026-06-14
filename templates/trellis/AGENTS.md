@@ -25,6 +25,11 @@ Keep it to durable, cross-session guidance — product, rules, standards, securi
 
 ## Development Rules
 
+### Communication Language
+- User-facing output — explanations, questions, status updates, summaries, anything the user reads — must be in Simplified Chinese (简体中文).
+- Software and internal work stays in English: code, identifiers, comments, commit messages, logs, test names, and your own reasoning/analysis.
+- This governs presentation, not content: do not rename existing identifiers or rewrite existing English docs just to comply, and match the surrounding language of any file you edit.
+
 ### Two-Step Confirmation First
 - Never start the moment a requirement is stated or changed. Every new or modified requirement first passes through an understand-and-confirm step before any code is written. The only exception is trivial mechanical actions whose intent is obvious (e.g. `git push`, fixing a typo, a one-line rename).
 - **Step one — reflect and surface, always in the open before building:**
