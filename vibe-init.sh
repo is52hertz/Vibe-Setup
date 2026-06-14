@@ -47,6 +47,13 @@ GIT_CHOICE=""
 # in ~/.zshrc). The --developer-name flag still overrides it; an empty value falls
 # back to auto-detection (git config user.name, then $USER).
 DEVELOPER_NAME="${DEVELOPER_NAME:-}"
+# Remember whether the developer name came from a global $DEVELOPER_NAME. That
+# path skips the interactive prompt, so we surface a hint instead of using it
+# silently. The --developer-name flag (explicit) clears this.
+DEVELOPER_NAME_FROM_ENV=0
+if [[ -n "${DEVELOPER_NAME}" ]]; then
+  DEVELOPER_NAME_FROM_ENV=1
+fi
 TRELLIS_PLATFORMS=""
 TEMPLATE_DIR=""
 TEMPLATE_DIR_EXPLICIT=0
@@ -153,11 +160,13 @@ while [[ $# -gt 0 ]]; do
     --developer-name)
       require_arg "$1" "${2:-}"
       DEVELOPER_NAME="$2"
+      DEVELOPER_NAME_FROM_ENV=0
       shift 2
       ;;
     --developer-name=*)
       DEVELOPER_NAME="${1#*=}"
       require_arg "--developer-name" "${DEVELOPER_NAME}"
+      DEVELOPER_NAME_FROM_ENV=0
       shift
       ;;
     --platforms)
@@ -680,6 +689,8 @@ install_and_init_trellis() {
   if [[ -z "${developer_name}" ]]; then
     default_name="$(default_developer_name)"
     developer_name="$(ask_value "Trellis developer name" "${default_name}")"
+  elif [[ "${DEVELOPER_NAME_FROM_ENV}" -eq 1 ]]; then
+    info "using Trellis developer name from \$DEVELOPER_NAME: ${developer_name} (override with --developer-name)"
   fi
   validate_developer_name "${developer_name}"
 
