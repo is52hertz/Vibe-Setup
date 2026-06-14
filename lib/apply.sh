@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # Sourced by vibe-init.sh (not run standalone). Relies on helpers and globals
 # defined there: info, warn, die, ensure_dir, ask_yes_no, ask_value, DRY_RUN,
-# ASSUME_DEFAULTS, TEMPLATE_DIR, TEMPLATE_FILES, APPLY_FILES.
+# ASSUME_DEFAULTS, TEMPLATE_DIR, TEMPLATE_FILES, APPLY_FILES, ON_EXISTS.
 #
-# apply mode copies the template files into an EXISTING project. It never
-# overwrites or merges what the user already has: when a target file exists, the
-# template is written alongside it as <name>.template instead.
+# apply mode copies the template files into an EXISTING project. For a file that
+# already exists in the target, the user chooses per file how to resolve it:
+# overwrite it, write the template alongside as <name>.template, or skip it. The
+# default (and the -y / non-TTY behavior) is the non-destructive <name>.template;
+# --on-exists overwrite|template|skip sets it for the whole run non-interactively.
 #
 # Before copying, apply mode lists the managed files with their status (already
 # present in the target vs new) and lets the user choose all or a subset. The
@@ -17,14 +19,50 @@
 # safe under set -u before choose_apply_files populates it.
 APPLY_SELECTED=()
 
-# Copy one template file into the target project.
+# How the most recent resolve_on_exists call decided to handle a pre-existing
+# file: "overwrite" | "template" | "skip".
+RESOLVED_DISPOSITION=""
+
+# Decide how to handle a pre-existing destination for one file; sets
+# RESOLVED_DISPOSITION to "overwrite" | "template" | "skip". A run-wide policy
+# (ON_EXISTS, from --on-exists) wins; otherwise -y / non-TTY default to the
+# non-destructive "template"; otherwise ask per file (default template).
+resolve_on_exists() {
+  local relative_path="$1"
+  local input=""
+
+  if [[ -n "${ON_EXISTS}" ]]; then
+    RESOLVED_DISPOSITION="${ON_EXISTS}"
+    return
+  fi
+  if [[ "${ASSUME_DEFAULTS}" -eq 1 || ! -t 0 ]]; then
+    RESOLVED_DISPOSITION="template"
+    return
+  fi
+
+  while true; do
+    input="$(ask_value "${relative_path} exists — [o]verwrite / [t]emplate / [s]kip?" "t")"
+    case "${input}" in
+      o|overwrite) RESOLVED_DISPOSITION="overwrite"; return ;;
+      t|template)  RESOLVED_DISPOSITION="template";  return ;;
+      s|skip)      RESOLVED_DISPOSITION="skip";      return ;;
+      *) warn "please answer o, t, or s" ;;
+    esac
+  done
+}
+
+# Copy one template file into the target project. When the destination already
+# exists, `disposition` ("overwrite" | "template" | "skip") decides what happens:
 #   - source missing in the template dir -> skip (info)
-#   - target does not exist               -> copy to target
-#   - target exists                       -> copy to <target>.template
-#   - <target>.template also exists       -> skip + warn (never overwrite anything)
-copy_template_or_suffix() {
+#   - destination does not exist          -> copy to destination
+#   - exists + overwrite                  -> copy over destination
+#   - exists + template                   -> copy to <destination>.template
+#                                            (skip + warn if that also exists)
+#   - exists + skip                       -> leave the existing file untouched
+copy_template_file() {
   local relative_path="$1"
   local destination="$2"
+  local disposition="$3"
   local source="${TEMPLATE_DIR}/${relative_path}"
   local target="${destination}"
 
@@ -34,11 +72,22 @@ copy_template_or_suffix() {
   fi
 
   if [[ -e "${destination}" ]]; then
-    target="${destination}.template"
-    if [[ -e "${target}" ]]; then
-      warn "skip ${relative_path}: both ${destination} and ${target} exist (won't overwrite)"
-      return
-    fi
+    case "${disposition}" in
+      overwrite)
+        target="${destination}"
+        ;;
+      skip)
+        info "skip ${relative_path}: ${destination} exists (kept)"
+        return
+        ;;
+      template|*)
+        target="${destination}.template"
+        if [[ -e "${target}" ]]; then
+          warn "skip ${relative_path}: both ${destination} and ${target} exist (won't overwrite)"
+          return
+        fi
+        ;;
+    esac
   fi
 
   ensure_dir "$(dirname -- "${target}")"
@@ -117,7 +166,11 @@ choose_apply_files() {
     status="$(apply_file_status "${rel}" "${project_dir}")"
     case "${status}" in
       exists)
-        label="exists -> writes ${rel}.template"
+        if [[ -n "${ON_EXISTS}" ]]; then
+          label="already exists -> ${ON_EXISTS}"
+        else
+          label="already exists (choose overwrite / template / skip)"
+        fi
         ;;
       new)
         label="new -> creates ${rel}"
@@ -184,7 +237,7 @@ choose_apply_files() {
 
 apply_templates() {
   local project_dir="$1"
-  local rel=""
+  local rel="" destination="" disposition=""
 
   choose_apply_files "${project_dir}"
 
@@ -194,6 +247,12 @@ apply_templates() {
   fi
 
   for rel in "${APPLY_SELECTED[@]}"; do
-    copy_template_or_suffix "${rel}" "${project_dir}/${rel}"
+    destination="${project_dir}/${rel}"
+    disposition="template"
+    if [[ -e "${destination}" ]]; then
+      resolve_on_exists "${rel}"
+      disposition="${RESOLVED_DISPOSITION}"
+    fi
+    copy_template_file "${rel}" "${destination}" "${disposition}"
   done
 }
