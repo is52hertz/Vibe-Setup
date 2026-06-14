@@ -21,6 +21,9 @@ TEMPLATE_ROOT="${SCRIPT_DIR}/templates"
 ASSUME_DEFAULTS=0
 DRY_RUN=0
 APPLY_MODE=0
+# Optional comma/space separated subset of TEMPLATE_FILES to copy in apply mode.
+# Empty means "ask interactively" (or "all" under -y / non-TTY). Requires --apply.
+APPLY_FILES=""
 # Single source of truth for the template files vibe-init manages. apply mode
 # iterates this list; the explicit calls in write_project_placeholders must stay
 # in sync with it (kept explicit there because each init copy pairs with its own
@@ -58,8 +61,11 @@ Options:
                            back to built-in placeholders.
   --apply                  Copy the template files into the CURRENT directory (an existing
                            project) instead of scaffolding a new one. Asks base vs Trellis
-                           template set (or use --template-dir). Existing files are left
+                           template set (or use --template-dir), then lists the managed files
+                           with their status and asks which to copy. Existing files are left
                            untouched; the copy is written as <name>.template instead.
+  --files "A,B"            Apply only this subset of the managed files (comma/space separated,
+                           e.g. "AGENTS.md,CLAUDE.md") instead of prompting. Requires --apply.
   -y, --yes                Accept safe defaults for prompts.
   --dry-run                Print actions without writing files or running installers.
   -h, --help               Show this help.
@@ -69,9 +75,11 @@ Behavior:
   - If it is not empty, create a project folder under the current directory.
   - The script ignores itself, .DS_Store, and .localized when checking emptiness.
   - Existing project files are skipped, not overwritten.
-  - With --apply: copies into the current directory; existing files are never
-    overwritten or merged, the copy lands as <name>.template instead. Does not
-    install or initialize Trellis.
+  - With --apply: lists the managed files (and whether each already exists) and
+    asks which to copy; --files preselects a subset and -y / non-TTY copies all.
+    Copies into the current directory; existing files are never overwritten or
+    merged, the copy lands as <name>.template instead. Does not install or
+    initialize Trellis.
 EOF
 }
 
@@ -150,6 +158,16 @@ while [[ $# -gt 0 ]]; do
       ;;
     --apply)
       APPLY_MODE=1
+      shift
+      ;;
+    --files)
+      require_arg "$1" "${2:-}"
+      APPLY_FILES="$2"
+      shift 2
+      ;;
+    --files=*)
+      APPLY_FILES="${1#*=}"
+      require_arg "--files" "${APPLY_FILES}"
       shift
       ;;
     -y|--yes)
@@ -750,6 +768,10 @@ main() {
   local project_dir=""
   local normalized_trellis_choice=""
   local install_trellis=0
+
+  if [[ -n "${APPLY_FILES}" && "${APPLY_MODE}" -eq 0 ]]; then
+    die "--files requires --apply"
+  fi
 
   if [[ "${APPLY_MODE}" -eq 1 ]]; then
     run_apply_mode
