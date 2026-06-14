@@ -31,6 +31,7 @@ APPLY_FILES=""
 TEMPLATE_FILES=(
   "AGENTS.md"
   "CLAUDE.md"
+  "CC-Cowork-Workflow.md"
   ".claude/settings.json"
   "Test/templates-test-checklist.html"
 )
@@ -754,6 +755,7 @@ write_project_placeholders() {
   # Keep this file list in sync with TEMPLATE_FILES (used by apply mode).
   copy_or_write_placeholder "AGENTS.md" "${project_dir}/AGENTS.md" "$(agents_placeholder)"
   copy_or_write_placeholder "CLAUDE.md" "${project_dir}/CLAUDE.md" "$(claude_placeholder)"
+  copy_optional_template "CC-Cowork-Workflow.md" "${project_dir}/CC-Cowork-Workflow.md"
   copy_or_write_placeholder ".claude/settings.json" "${project_dir}/.claude/settings.json" "$(claude_settings_placeholder)"
   copy_optional_template "Test/templates-test-checklist.html" "${project_dir}/Test/templates-test-checklist.html"
 }
