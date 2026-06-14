@@ -353,6 +353,33 @@ copy_or_write_placeholder() {
   write_file_if_missing "${destination}" "${placeholder}"
 }
 
+# Copy a template file that has no built-in placeholder fallback (e.g. the manual
+# test-checklist HTML). Honors skip-existing and dry-run; if the template dir does
+# not ship the file, it is simply skipped rather than written from a placeholder.
+copy_optional_template() {
+  local relative_path="$1"
+  local destination="$2"
+  local source="${TEMPLATE_DIR}/${relative_path}"
+
+  if [[ -e "${destination}" ]]; then
+    info "skip existing ${destination}"
+    return
+  fi
+
+  if [[ ! -f "${source}" ]]; then
+    info "skip ${relative_path}: not present in template dir"
+    return
+  fi
+
+  ensure_dir "$(dirname -- "${destination}")"
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    info "dry-run: copy ${source} -> ${destination}"
+  else
+    cp "${source}" "${destination}"
+    info "copied ${destination}"
+  fi
+}
+
 agents_placeholder() {
   cat <<'EOF'
 # AGENTS.md
@@ -638,6 +665,7 @@ write_project_placeholders() {
   copy_or_write_placeholder "AGENTS.md" "${project_dir}/AGENTS.md" "$(agents_placeholder)"
   copy_or_write_placeholder "CLAUDE.md" "${project_dir}/CLAUDE.md" "$(claude_placeholder)"
   copy_or_write_placeholder ".claude/settings.json" "${project_dir}/.claude/settings.json" "$(claude_settings_placeholder)"
+  copy_optional_template "Test/templates-test-checklist.html" "${project_dir}/Test/templates-test-checklist.html"
 }
 
 choose_project_dir() {
