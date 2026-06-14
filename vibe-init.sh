@@ -24,6 +24,9 @@ APPLY_MODE=0
 # Optional comma/space separated subset of TEMPLATE_FILES to copy in apply mode.
 # Empty means "ask interactively" (or "all" under -y / non-TTY). Requires --apply.
 APPLY_FILES=""
+# How apply mode resolves a file that already exists: overwrite|template|skip.
+# Empty means "ask per file" (or "template" under -y / non-TTY). Requires --apply.
+ON_EXISTS=""
 # Single source of truth for the template files vibe-init manages. apply mode
 # iterates this list; the explicit calls in write_project_placeholders must stay
 # in sync with it (kept explicit there because each init copy pairs with its own
@@ -72,6 +75,9 @@ Options:
                            untouched; the copy is written as <name>.template instead.
   --files "A,B"            Apply only this subset of the managed files (comma/space separated,
                            e.g. "AGENTS.md,CLAUDE.md") instead of prompting. Requires --apply.
+  --on-exists MODE         How --apply resolves a file that already exists, without prompting:
+                           overwrite | template (write <name>.template) | skip. Default: ask
+                           per file (template under -y / non-TTY). Requires --apply.
   -y, --yes                Accept safe defaults for prompts.
   --dry-run                Print actions without writing files or running installers.
   -h, --help               Show this help.
@@ -85,9 +91,11 @@ Behavior:
     the project is already a git repository. Not done in --apply mode.
   - With --apply: lists the managed files (and whether each already exists) and
     asks which to copy; --files preselects a subset and -y / non-TTY copies all.
-    Copies into the current directory; existing files are never overwritten or
-    merged, the copy lands as <name>.template instead. Does not install or
-    initialize Trellis.
+    Copies into the current directory. For a file that already exists you choose
+    per file: overwrite, write <name>.template, or skip (default template, also
+    the -y / non-TTY behavior); --on-exists sets this for the whole run. Does not
+    install or initialize Trellis. Notes (but does not act on) a target that is
+    not a git repository.
 EOF
 }
 
@@ -186,6 +194,16 @@ while [[ $# -gt 0 ]]; do
     --files=*)
       APPLY_FILES="${1#*=}"
       require_arg "--files" "${APPLY_FILES}"
+      shift
+      ;;
+    --on-exists)
+      require_arg "$1" "${2:-}"
+      ON_EXISTS="$2"
+      shift 2
+      ;;
+    --on-exists=*)
+      ON_EXISTS="${1#*=}"
+      require_arg "--on-exists" "${ON_EXISTS}"
       shift
       ;;
     -y|--yes)
@@ -788,6 +806,18 @@ choose_project_dir() {
   printf '%s\n' "${project_dir}"
 }
 
+# Apply mode is non-destructive and never touches git. If the target is not a
+# git repository, surface a hint — detection only; we do NOT run git init here.
+hint_if_not_git_repo() {
+  local target_dir="$1"
+
+  command -v git >/dev/null 2>&1 || return
+  if git -C "${target_dir}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    return
+  fi
+  info "note: ${target_dir} is not a git repository; run 'git init' yourself if you want version control (--apply does not)"
+}
+
 run_apply_mode() {
   local target_dir=""
   local apply_lib="${SCRIPT_DIR}/lib/apply.sh"
@@ -811,6 +841,8 @@ run_apply_mode() {
   info "applying template set: ${TEMPLATE_DIR}"
   apply_templates "${target_dir}"
 
+  hint_if_not_git_repo "${target_dir}"
+
   info "done"
   info "target directory: ${target_dir}"
 }
@@ -822,6 +854,14 @@ main() {
 
   if [[ -n "${APPLY_FILES}" && "${APPLY_MODE}" -eq 0 ]]; then
     die "--files requires --apply"
+  fi
+
+  if [[ -n "${ON_EXISTS}" ]]; then
+    [[ "${APPLY_MODE}" -eq 1 ]] || die "--on-exists requires --apply"
+    case "${ON_EXISTS}" in
+      overwrite|template|skip) ;;
+      *) die "--on-exists must be overwrite, template, or skip" ;;
+    esac
   fi
 
   if [[ "${APPLY_MODE}" -eq 1 ]]; then
