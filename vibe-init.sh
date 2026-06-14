@@ -20,6 +20,17 @@ TEMPLATE_ROOT="${SCRIPT_DIR}/templates"
 
 ASSUME_DEFAULTS=0
 DRY_RUN=0
+APPLY_MODE=0
+# Single source of truth for the template files vibe-init manages. apply mode
+# iterates this list; the explicit calls in write_project_placeholders must stay
+# in sync with it (kept explicit there because each init copy pairs with its own
+# built-in placeholder, and bash 3.2 has no reliable associative arrays).
+TEMPLATE_FILES=(
+  "AGENTS.md"
+  "CLAUDE.md"
+  ".claude/settings.json"
+  "Test/templates-test-checklist.html"
+)
 PROJECT_NAME=""
 TRELLIS_CHOICE=""
 # Honor a default developer name from the environment (e.g. export DEVELOPER_NAME
@@ -45,6 +56,10 @@ Options:
   --template-dir DIR       Override the template directory. Default: templates/trellis when
                            Trellis is enabled, otherwise templates/base. Missing files fall
                            back to built-in placeholders.
+  --apply                  Copy the template files into the CURRENT directory (an existing
+                           project) instead of scaffolding a new one. Asks base vs Trellis
+                           template set (or use --template-dir). Existing files are left
+                           untouched; the copy is written as <name>.template instead.
   -y, --yes                Accept safe defaults for prompts.
   --dry-run                Print actions without writing files or running installers.
   -h, --help               Show this help.
@@ -54,6 +69,9 @@ Behavior:
   - If it is not empty, create a project folder under the current directory.
   - The script ignores itself, .DS_Store, and .localized when checking emptiness.
   - Existing project files are skipped, not overwritten.
+  - With --apply: copies into the current directory; existing files are never
+    overwritten or merged, the copy lands as <name>.template instead. Does not
+    install or initialize Trellis.
 EOF
 }
 
@@ -128,6 +146,10 @@ while [[ $# -gt 0 ]]; do
       TEMPLATE_DIR="${1#*=}"
       require_arg "--template-dir" "${TEMPLATE_DIR}"
       TEMPLATE_DIR_EXPLICIT=1
+      shift
+      ;;
+    --apply)
+      APPLY_MODE=1
       shift
       ;;
     -y|--yes)
@@ -662,6 +684,7 @@ resolve_template_dir() {
 write_project_placeholders() {
   local project_dir="$1"
 
+  # Keep this file list in sync with TEMPLATE_FILES (used by apply mode).
   copy_or_write_placeholder "AGENTS.md" "${project_dir}/AGENTS.md" "$(agents_placeholder)"
   copy_or_write_placeholder "CLAUDE.md" "${project_dir}/CLAUDE.md" "$(claude_placeholder)"
   copy_or_write_placeholder ".claude/settings.json" "${project_dir}/.claude/settings.json" "$(claude_settings_placeholder)"
@@ -696,10 +719,42 @@ choose_project_dir() {
   printf '%s\n' "${project_dir}"
 }
 
+run_apply_mode() {
+  local target_dir=""
+  local apply_lib="${SCRIPT_DIR}/lib/apply.sh"
+
+  target_dir="$(pwd -P)"
+
+  # Pick the source template set. An explicit --template-dir wins; otherwise ask
+  # base vs Trellis (ask_yes_no returns the default under -y / non-TTY, i.e. base).
+  if [[ "${TEMPLATE_DIR_EXPLICIT}" -eq 1 ]]; then
+    resolve_template_dir 0
+  elif ask_yes_no "Apply from the Trellis template set instead of base?" "no"; then
+    resolve_template_dir 1
+  else
+    resolve_template_dir 0
+  fi
+
+  [[ -f "${apply_lib}" ]] || die "apply library not found: ${apply_lib}"
+  # shellcheck source=lib/apply.sh
+  . "${apply_lib}"
+
+  info "applying template set: ${TEMPLATE_DIR}"
+  apply_templates "${target_dir}"
+
+  info "done"
+  info "target directory: ${target_dir}"
+}
+
 main() {
   local project_dir=""
   local normalized_trellis_choice=""
   local install_trellis=0
+
+  if [[ "${APPLY_MODE}" -eq 1 ]]; then
+    run_apply_mode
+    return
+  fi
 
   project_dir="$(choose_project_dir)"
 
