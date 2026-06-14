@@ -36,6 +36,9 @@ TEMPLATE_FILES=(
 )
 PROJECT_NAME=""
 TRELLIS_CHOICE=""
+# Whether to run `git init` in a freshly scaffolded project. Empty means "ask"
+# (default yes); --git yes|no sets it non-interactively. Ignored in --apply mode.
+GIT_CHOICE=""
 # Honor a default developer name from the environment (e.g. export DEVELOPER_NAME
 # in ~/.zshrc). The --developer-name flag still overrides it; an empty value falls
 # back to auto-detection (git config user.name, then $USER).
@@ -52,6 +55,8 @@ Usage:
 
 Options:
   --name NAME              Project folder name when current directory is not empty.
+  --git yes|no             Whether to run git init in the new project (default: yes).
+                           Ignored with --apply. Skipped if already a git repository.
   --trellis yes|no         Whether to install/init Trellis.
   --developer-name NAME    Developer identity passed to: trellis init -u NAME.
                            Defaults to \$DEVELOPER_NAME, then git user.name, then \$USER.
@@ -75,6 +80,8 @@ Behavior:
   - If it is not empty, create a project folder under the current directory.
   - The script ignores itself, .DS_Store, and .localized when checking emptiness.
   - Existing project files are skipped, not overwritten.
+  - Asks whether to run git init in the new project (default yes); skipped when
+    the project is already a git repository. Not done in --apply mode.
   - With --apply: lists the managed files (and whether each already exists) and
     asks which to copy; --files preselects a subset and -y / non-TTY copies all.
     Copies into the current directory; existing files are never overwritten or
@@ -122,6 +129,16 @@ while [[ $# -gt 0 ]]; do
     --trellis=*)
       TRELLIS_CHOICE="${1#*=}"
       require_arg "--trellis" "${TRELLIS_CHOICE}"
+      shift
+      ;;
+    --git)
+      require_arg "$1" "${2:-}"
+      GIT_CHOICE="$2"
+      shift 2
+      ;;
+    --git=*)
+      GIT_CHOICE="${1#*=}"
+      require_arg "--git" "${GIT_CHOICE}"
       shift
       ;;
     --developer-name)
@@ -699,6 +716,38 @@ resolve_template_dir() {
   fi
 }
 
+# Optionally `git init` a freshly scaffolded project. Skips when the directory
+# is already a git repository; honors --git yes|no, -y / non-TTY (default yes),
+# and --dry-run. Warns and skips if git is not installed.
+maybe_init_git() {
+  local project_dir="$1"
+  local normalized_choice=""
+
+  if [[ -e "${project_dir}/.git" ]]; then
+    info "skip git init: ${project_dir} is already a git repository"
+    return
+  fi
+
+  if [[ -n "${GIT_CHOICE}" ]]; then
+    normalized_choice="$(normalize_yes_no "${GIT_CHOICE}")" || die "--git must be yes or no"
+    if [[ "${normalized_choice}" != "yes" ]]; then
+      info "skip git init (per --git no)"
+      return
+    fi
+  elif ! ask_yes_no "Initialize a git repository?" "yes"; then
+    info "skip git init"
+    return
+  fi
+
+  if ! command -v git >/dev/null 2>&1; then
+    warn "git was not found; skipping git init"
+    return
+  fi
+
+  info "initializing git repository in ${project_dir}"
+  run_in_dir "${project_dir}" git init
+}
+
 write_project_placeholders() {
   local project_dir="$1"
 
@@ -779,6 +828,8 @@ main() {
   fi
 
   project_dir="$(choose_project_dir)"
+
+  maybe_init_git "${project_dir}"
 
   if [[ -n "${TRELLIS_CHOICE}" ]]; then
     normalized_trellis_choice="$(normalize_yes_no "${TRELLIS_CHOICE}")" || die "--trellis must be yes or no"
