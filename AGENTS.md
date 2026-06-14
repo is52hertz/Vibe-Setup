@@ -12,8 +12,8 @@ Vibe-Setup is a project-bootstrapping tool for AI-assisted development. Its cent
 ## Project Phase
 
 <!-- A terse, kept-current snapshot of each app/package — not a log. Update in place; don't append history. -->
-- **vibe-init.sh**: Built — scaffold mode (empty dir or named subfolder), `--apply` mode for existing projects, optional Trellis install/init, secret-deny merge into Trellis-generated settings, `$DEVELOPER_NAME` support, `--dry-run`, `-y`. Tested manually via gitignored scaffolding dirs (`[0-9]/`); no automated test suite yet.
-- **lib/apply.sh**: Built — sourced by the entrypoint; copies template files into an existing project, never overwriting (writes `<name>.template` on conflict).
+- **vibe-init.sh**: Built — scaffold mode (empty dir or named subfolder), `--apply` mode for existing projects (interactive file selection, `--files` to preselect a subset), optional Trellis install/init, secret-deny merge into Trellis-generated settings, `$DEVELOPER_NAME` support, `--dry-run`, `-y`. Tested manually via gitignored scaffolding dirs (`[0-9]/`); no automated test suite yet.
+- **lib/apply.sh**: Built — sourced by the entrypoint; lists the managed files with their status and lets the user copy all or a chosen subset into an existing project, never overwriting (writes `<name>.template` on conflict).
 - **templates/ (base, trellis)**: Authored and kept current — `AGENTS.md`, `CLAUDE.md`, `.claude/settings.json`, and the manual test-checklist HTML.
 
 ## Development Rules
