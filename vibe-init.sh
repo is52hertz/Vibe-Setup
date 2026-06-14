@@ -87,7 +87,8 @@ Behavior:
     asks which to copy; --files preselects a subset and -y / non-TTY copies all.
     Copies into the current directory; existing files are never overwritten or
     merged, the copy lands as <name>.template instead. Does not install or
-    initialize Trellis.
+    initialize Trellis. Notes (but does not act on) a target that is not a git
+    repository.
 EOF
 }
 
@@ -788,6 +789,18 @@ choose_project_dir() {
   printf '%s\n' "${project_dir}"
 }
 
+# Apply mode is non-destructive and never touches git. If the target is not a
+# git repository, surface a hint — detection only; we do NOT run git init here.
+hint_if_not_git_repo() {
+  local target_dir="$1"
+
+  command -v git >/dev/null 2>&1 || return
+  if git -C "${target_dir}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    return
+  fi
+  info "note: ${target_dir} is not a git repository; run 'git init' yourself if you want version control (--apply does not)"
+}
+
 run_apply_mode() {
   local target_dir=""
   local apply_lib="${SCRIPT_DIR}/lib/apply.sh"
@@ -810,6 +823,8 @@ run_apply_mode() {
 
   info "applying template set: ${TEMPLATE_DIR}"
   apply_templates "${target_dir}"
+
+  hint_if_not_git_repo "${target_dir}"
 
   info "done"
   info "target directory: ${target_dir}"
