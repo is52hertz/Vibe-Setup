@@ -19,6 +19,11 @@
 # safe under set -u before choose_apply_files populates it.
 APPLY_SELECTED=()
 
+# Relative paths that were written as <name>.template because the target already
+# existed and the user chose / defaulted to the non-destructive template
+# disposition. Drives the end-of-run "merge these into your real files" hint.
+APPLIED_TEMPLATES=()
+
 # How the most recent resolve_on_exists call decided to handle a pre-existing
 # file: "overwrite" | "template" | "skip".
 RESOLVED_DISPOSITION=""
@@ -65,6 +70,7 @@ copy_template_file() {
   local disposition="$3"
   local source="${TEMPLATE_DIR}/${relative_path}"
   local target="${destination}"
+  local is_template=0
 
   if [[ ! -f "${source}" ]]; then
     info "skip ${relative_path}: not present in template dir"
@@ -86,6 +92,7 @@ copy_template_file() {
           warn "skip ${relative_path}: both ${destination} and ${target} exist (won't overwrite)"
           return
         fi
+        is_template=1
         ;;
     esac
   fi
@@ -96,6 +103,10 @@ copy_template_file() {
   else
     cp "${source}" "${target}"
     info "copied ${target}"
+  fi
+
+  if [[ "${is_template}" -eq 1 ]]; then
+    APPLIED_TEMPLATES+=("${relative_path}")
   fi
 }
 
@@ -255,4 +266,36 @@ apply_templates() {
     fi
     copy_template_file "${rel}" "${destination}" "${disposition}"
   done
+}
+
+# After apply, if any files landed as <name>.template beside an existing file,
+# print a clean, copy-pasteable prompt (no log prefix, between separators) the
+# user can hand to an AI agent: reconcile each template into the user's file,
+# preserving their customizations, and surface conflicts for the user to decide.
+suggest_template_merges() {
+  local rel="" count="" noun="files were"
+
+  count="${#APPLIED_TEMPLATES[@]}"
+  [[ "${count}" -gt 0 ]] || return 0
+  [[ "${count}" -eq 1 ]] && noun="file was"
+
+  info "${count} ${noun} written as <name>.template beside an existing file."
+  info "copy the prompt between the lines below and give it to your AI agent:"
+
+  {
+    printf '%s\n' "────────── suggested prompt for your AI agent ──────────"
+    printf '%s\n' "Bring my files up to date with vibe-init's latest templates. For each pair,"
+    printf '%s\n' "the .template is the NEW template version and the plain file is MY current"
+    printf '%s\n' "one (which may hold my customizations):"
+    for rel in "${APPLIED_TEMPLATES[@]}"; do
+      printf '  - %s.template  ->  %s\n' "${rel}" "${rel}"
+    done
+    printf '%s\n' "Merge the template into my file: keep my customizations, fold in new/changed"
+    printf '%s\n' "guidance, and respect each file's format (e.g. JSON for settings). Where they"
+    printf '%s\n' "genuinely conflict, do not choose silently — list each conflict and ask me to"
+    printf '%s\n' "decide. When you ask me anything, write it in Simplified Chinese (中文); keep"
+    printf '%s\n' "code, identifiers, and your own reasoning in English. After I confirm, delete"
+    printf '%s\n' "the .template files."
+    printf '%s\n' "────────────────────────────────────────────────────────"
+  } >&2
 }

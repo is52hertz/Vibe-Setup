@@ -99,6 +99,16 @@ has "apply menu marks existing file" "already exists"
 has "apply default writes .template" "-> ${d}/AGENTS.md.template"
 has "apply creates a new file"       "-> ${d}/CLAUDE.md"
 has "apply hints non-git target"     "is not a git repository"
+has "apply prints agent prompt block"  "suggested prompt for your AI agent"
+has "apply prompt explains direction"  "NEW template version"
+has "apply prompt flags conflicts"     "ask me to"
+has "apply prompt sets Chinese for user questions" "Simplified Chinese (中文)"
+has "apply prompt lists the pair"      "AGENTS.md.template  ->  AGENTS.md"
+
+# --- apply with no pre-existing files: no merge suggestion ---
+d="$(sandbox)"
+vi "${d}" --apply -y --dry-run
+hasnt "no .template means no merge suggestion" "suggested prompt for your AI agent"
 
 # --- apply --files subset ---
 d="$(sandbox)"

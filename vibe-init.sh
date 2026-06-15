@@ -952,6 +952,8 @@ run_apply_mode() {
   info "applying template set: ${TEMPLATE_DIR}"
   apply_templates "${target_dir}"
 
+  suggest_template_merges
+
   hint_if_not_git_repo "${target_dir}"
 
   info "done"
