@@ -27,6 +27,11 @@ APPLY_FILES=""
 # How apply mode resolves a file that already exists: overwrite|template|skip.
 # Empty means "ask per file" (or "template" under -y / non-TTY). Requires --apply.
 ON_EXISTS=""
+# Project profile for a NEW project: service|tool|ask. Empty means "ask"
+# interactively, or "ask" (keep every profile block for the AI) under -y / non-TTY.
+# A concrete service|tool prunes the scaffolded AGENTS.md down to that block.
+# Rejected with --apply, where the AI resolves the profile from the codebase.
+PROFILE=""
 # Single source of truth for the template files vibe-init manages. apply mode
 # iterates this list; the explicit calls in write_project_placeholders must stay
 # in sync with it (kept explicit there because each init copy pairs with its own
@@ -68,6 +73,10 @@ Options:
   --name NAME              Project folder name when current directory is not empty.
   --git yes|no             Whether to run git init in the new project (default: yes).
                            Ignored with --apply. Skipped if already a git repository.
+  --profile MODE           Project profile for a NEW project: service | tool | ask.
+                           service/tool prune the scaffolded AGENTS.md to that rule
+                           set; ask (the -y / non-TTY default) keeps all profiles for
+                           the project's AI to resolve later. Not valid with --apply.
   --trellis yes|no         Whether to install/init Trellis.
   --developer-name NAME    Developer identity passed to: trellis init -u NAME.
                            Defaults to \$DEVELOPER_NAME, then git user.name, then \$USER.
@@ -156,6 +165,16 @@ while [[ $# -gt 0 ]]; do
     --git=*)
       GIT_CHOICE="${1#*=}"
       require_arg "--git" "${GIT_CHOICE}"
+      shift
+      ;;
+    --profile)
+      require_arg "$1" "${2:-}"
+      PROFILE="$2"
+      shift 2
+      ;;
+    --profile=*)
+      PROFILE="${1#*=}"
+      require_arg "--profile" "${PROFILE}"
       shift
       ;;
     --developer-name)
@@ -787,6 +806,78 @@ maybe_init_git() {
   run_in_dir "${project_dir}" git init
 }
 
+# Prune the scaffolded AGENTS.md to a single profile: drop the other PROFILE
+# blocks, every PROFILE marker comment, and the one-time PROFILE-SETUP note,
+# leaving the chosen block's content. A no-op if the file carries no markers
+# (e.g. AGENTS.md came from the built-in placeholder). Honors --dry-run.
+prune_profile() {
+  local file="$1"
+  local profile="$2"
+  local tmp=""
+
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    info "dry-run: prune ${file} to '${profile}' profile"
+    return 0
+  fi
+
+  [[ -f "${file}" ]] || return 0
+  grep -q '<!-- PROFILE:' "${file}" || return 0
+
+  tmp="${file}.prune.$$"
+  if awk -v keep="${profile}" '
+    /<!-- PROFILE-SETUP/ { in_setup = 1 }
+    in_setup { if ($0 ~ /-->/) in_setup = 0; next }
+    /<!-- PROFILE:[A-Za-z]+ START -->/ {
+      name = $0
+      sub(/.*<!-- PROFILE:/, "", name)
+      sub(/ START -->.*/, "", name)
+      if (name != keep) in_drop = 1
+      next
+    }
+    /<!-- PROFILE:[A-Za-z]+ END -->/ { in_drop = 0; next }
+    in_drop { next }
+    { print }
+  ' "${file}" | cat -s > "${tmp}"; then
+    mv "${tmp}" "${file}"
+    info "pruned ${file} to '${profile}' profile"
+  else
+    rm -f "${tmp}"
+    warn "failed to prune ${file}; left as-is"
+  fi
+}
+
+# Resolve the project profile and, when concrete (service|tool), prune the
+# scaffolded AGENTS.md to it. --profile wins; otherwise -y / non-TTY default to
+# "ask" (keep every block for the project's AI); an interactive run is prompted.
+resolve_and_apply_profile() {
+  local project_dir="$1"
+  local choice="" lower=""
+
+  if [[ -n "${PROFILE}" ]]; then
+    lower="$(printf '%s' "${PROFILE}" | tr '[:upper:]' '[:lower:]')"
+  elif [[ "${ASSUME_DEFAULTS}" -eq 1 || ! -t 0 ]]; then
+    lower="ask"
+  else
+    while true; do
+      choice="$(ask_value "Project profile: service / tool / ask ('ask' = let the AI decide later)" "ask")"
+      lower="$(printf '%s' "${choice}" | tr '[:upper:]' '[:lower:]')"
+      case "${lower}" in
+        service|tool|ask) break ;;
+        *) warn "please answer service, tool, or ask" ;;
+      esac
+    done
+  fi
+
+  case "${lower}" in
+    service|tool)
+      prune_profile "${project_dir}/AGENTS.md" "${lower}"
+      ;;
+    *)
+      info "leaving all profile blocks in AGENTS.md for the project's AI to resolve"
+      ;;
+  esac
+}
+
 write_project_placeholders() {
   local project_dir="$1"
 
@@ -884,6 +975,14 @@ main() {
     esac
   fi
 
+  if [[ -n "${PROFILE}" ]]; then
+    [[ "${APPLY_MODE}" -eq 0 ]] || die "--profile is not valid with --apply (apply leaves profiles for the AI to resolve)"
+    case "$(printf '%s' "${PROFILE}" | tr '[:upper:]' '[:lower:]')" in
+      service|tool|ask) ;;
+      *) die "--profile must be service, tool, or ask" ;;
+    esac
+  fi
+
   if [[ "${APPLY_MODE}" -eq 1 ]]; then
     run_apply_mode
     return
@@ -916,6 +1015,8 @@ main() {
   fi
 
   write_project_placeholders "${project_dir}"
+
+  resolve_and_apply_profile "${project_dir}"
 
   info "done"
   info "project directory: ${project_dir}"
