@@ -46,9 +46,19 @@ Keep it to durable, cross-session guidance — product, rules, standards, securi
 - Respond with two things: (1) your complete understanding of the request, and (2) a detailed, step-by-step explanation of how you would execute it.
 - Make changes only after the user explicitly asks you to proceed.
 
+### Simplicity First
+- Write the minimum code that solves the stated problem; nothing speculative.
+- No features, flags, config, or abstractions that weren't requested. Don't build "flexibility" for a future that isn't here.
+- A single-use helper needs no abstraction — inline first, extract only on the second real caller.
+- Validate untrusted input at the trust boundary, but don't add defensive handling for inputs that cannot occur.
+- Adding a new third-party dependency needs the user's OK first; prefer the standard library and what's already in the project, and say why the dep is worth its cost.
+- Before finishing, ask: would a senior engineer call this overcomplicated? If yes, cut it down.
+
 ### Scope Discipline
 - Each task must stay within its stated scope. Do not add, refactor, or "improve" anything outside the current request.
 - If the current task logically depends on another unbuilt feature, ask the user before implementing it. Never silently introduce adjacent functionality.
+- Match the surrounding style and patterns even if you'd do it differently; don't reformat or refactor code your task doesn't touch.
+- Clean up only the orphans your change creates (now-unused imports/vars/functions). Pre-existing dead code: flag it, don't delete it.
 
 ### Coding Standards
 <!-- TODO: Replace the bullets below with this project's real standards. Keep each one concrete and enforceable, not a platitude. Delete what doesn't apply. -->
@@ -57,7 +67,12 @@ Keep it to durable, cross-session guidance — product, rules, standards, securi
 - **Language / framework conventions**: TODO — follow existing conventions; note key idioms and any banned APIs or patterns.
 - **Security boundary**: TODO — the project's trust boundary; never execute downloaded or arbitrary code; never expose a control surface beyond the intended users.
 
+### Secrets & Sensitive Data
+- Never hardcode secrets or credentials; read them from environment/config. Never print, log, or echo secrets, tokens, or PII.
+- Keep the project's seeded secrets-deny rules (covering `.env*`, `secrets/**`, and key files) in place.
+
 ### Verify & Commit
+- Before coding, restate the task as a concrete, checkable success criterion rather than "make it work", and scale testing to the work's risk.
 - After any code change, run the project's verification (e.g. type-check / build / lint) across all affected packages.
 - If verification fails, fix the errors first, then verify again.
 - After verification passes, automatically commit files that were modified by the agent in the current task and belong to the current task.
@@ -73,8 +88,31 @@ Keep it to durable, cross-session guidance — product, rules, standards, securi
   ```
   Types: `feat`, `fix`, `refactor`, `chore`, `docs`, `test`, `ci`, `perf`.
 
+### Project Profile
+
+<!-- PROFILE-SETUP (one-time): this template ships multiple rule profiles below.
+     Before real work: (1) infer the project type, (2) ask the user which profile
+     fits — use the platform's structured question mechanism if available,
+     otherwise ask directly, (3) keep that PROFILE block, delete the others and
+     this setup note, then commit. Until resolved, treat all profile-gated rules
+     below as INACTIVE. -->
+
+<!-- PROFILE:service START -->
+**Profile: service / backend** — long-running services, APIs, anything with a datastore or external callers.
+- Tests are required: cover new behavior; for a bug, first add a test that reproduces it, then make it pass.
+- Validate and normalize every input crossing the trust boundary; never trust client-supplied values.
+- **Data integrity & concurrency**: TODO — transactional boundaries, how concurrent writes are serialized, and idempotency for external callbacks. Fill in for this project.
+<!-- PROFILE:service END -->
+
+<!-- PROFILE:tool START -->
+**Profile: lightweight tool / script** — one-off scripts, small CLIs, utilities.
+- Scale verification to the risk: a documented manual check or a smoke test can be enough; don't build a test harness a small tool doesn't warrant.
+- Skip layered architecture and speculative abstraction; keep it a small, readable unit.
+<!-- PROFILE:tool END -->
+
 ### Session Handoff
 - `notice.md` files are scoped by directory and record durable handoff information for the next agent.
+- At the start of a task, read the relevant `notice.md` files (the root one and those in the directories you'll work in) before making changes.
 - Root `notice.md` records global, cross-package, or cross-task project information.
 - App/package notices record durable facts for that app/package: architecture, contracts, workflows, credentials, known limitations, and package-specific gotchas.
 - Update the relevant `notice.md` only when the session creates or discovers information that remains useful beyond the current task or conversation. Do not record pure Q&A, routine progress, temporary decisions, or workflow session/journal details there.

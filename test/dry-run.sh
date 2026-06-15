@@ -74,6 +74,23 @@ d="$(sandbox)"
 vi "${d}" --trellis no -y --dry-run
 has "git init runs by default (-y)" "initializing git repository"
 
+# --- profile selection (scaffold) ---
+d="$(sandbox)"
+vi "${d}" --trellis no --git no --dry-run --profile service
+has "--profile service prunes AGENTS.md" "prune ${d}/AGENTS.md to 'service' profile"
+
+d="$(sandbox)"
+vi "${d}" --trellis no --git no -y --dry-run
+has "default profile keeps all blocks" "leaving all profile blocks"
+
+vi "$(sandbox)" --dry-run --profile bogus
+rc_is "--profile bogus dies" 1
+has   "--profile bogus message" "--profile must be"
+
+vi "$(sandbox)" --apply -y --dry-run --profile service
+rc_is "--profile with --apply dies" 1
+has   "--profile with --apply message" "not valid with --apply"
+
 # --- apply: existing file defaults to .template, new files created ---
 d="$(sandbox)"
 printf 'existing\n' > "${d}/AGENTS.md"
