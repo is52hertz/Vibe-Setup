@@ -105,6 +105,19 @@ rather than overwriting it.
 - The seeded `.claude/settings.json` blocks agents from reading common secret
   files.
 
+## Tests
+
+A minimal dry-run assertion suite checks the CLI without writing files or
+running installers:
+
+```sh
+./test/dry-run.sh
+```
+
+It runs `vibe-init.sh --dry-run` across the main scenarios (scaffold, `--apply`
+file selection and `--on-exists`, flag guards, and Trellis init) and asserts on
+the actions printed. Exit code 0 means every assertion passed.
+
 ## License
 
 [MIT](LICENSE) © Teethe
