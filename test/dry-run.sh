@@ -74,6 +74,38 @@ d="$(sandbox)"
 vi "${d}" --trellis no -y --dry-run
 has "git init runs by default (-y)" "initializing git repository"
 
+# --- positional PROJECT name (scaffold) ---
+d="$(sandbox)"
+printf 'existing\n' > "${d}/existing.txt"
+vi "${d}" myproj --trellis no --git no -y --dry-run
+has   "positional PROJECT creates subfolder" "-> ${d}/myproj/AGENTS.md"
+has   "positional PROJECT name adopted"       "-> ${d}/myproj/CLAUDE.md"
+hasnt "positional PROJECT does not leak to cwd" "-> ${d}/AGENTS.md"
+
+# Positional name is ignored when the directory is effectively empty (in-place).
+d="$(sandbox)"
+vi "${d}" foo --trellis no --git no -y --dry-run
+has   "positional PROJECT ignored in empty dir" "-> ${d}/AGENTS.md"
+hasnt "positional PROJECT no subfolder in empty" "-> ${d}/foo/AGENTS.md"
+
+# Extra positional argument dies.
+vi "$(sandbox)" --trellis no --git no --dry-run foo bar
+rc_is "extra positional dies" 1
+has   "extra positional message" "conflicting project name"
+
+# Positional PROJECT conflicts with --name (either order).
+vi "$(sandbox)" foo --name bar --dry-run
+rc_is "positional then --name dies" 1
+has   "positional then --name message" "conflicting project name"
+vi "$(sandbox)" --name bar foo --dry-run
+rc_is "--name then positional dies" 1
+has   "--name then positional message" "conflicting project name"
+
+# Positional PROJECT is not valid with --apply.
+vi "$(sandbox)" foo --apply -y --dry-run
+rc_is "positional with --apply dies" 1
+has   "positional with --apply message" "not valid with --apply"
+
 # --- profile selection (scaffold) ---
 d="$(sandbox)"
 vi "${d}" --trellis no --git no --dry-run --profile service

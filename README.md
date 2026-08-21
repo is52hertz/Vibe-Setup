@@ -45,6 +45,8 @@ creates a project subfolder):
 
 ```sh
 vibe-init
+# or, in a non-empty directory, name the project directly:
+vibe-init my-project
 ```
 
 You will be asked whether to `git init` the project (default **yes**) and
@@ -65,6 +67,7 @@ exists, the copy lands alongside it as `<name>.template` instead.
 
 | Option | Description |
 | --- | --- |
+| `PROJECT` | Bare positional project name (equivalent to `--name`); only used when the current directory is not empty. Cannot be combined with `--name` or `--apply`. |
 | `--name NAME` | Project folder name when the current directory is not empty. |
 | `--git yes\|no` | Whether to run `git init` in the new project (default: yes). Skipped if already a repo; ignored with `--apply`. |
 | `--trellis yes\|no` | Whether to install/initialize Trellis. |

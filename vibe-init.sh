@@ -44,6 +44,10 @@ TEMPLATE_FILES=(
   "Test/templates-test-checklist.html"
 )
 PROJECT_NAME=""
+# Set when the project name came from a bare positional <PROJECT> argument
+# (e.g. `vibe-init myproject`) rather than --name. Used to reject a conflicting
+# --name and a positional PROJECT with --apply.
+PROJECT_NAME_POSITIONAL=0
 TRELLIS_CHOICE=""
 # Whether to run `git init` in a freshly scaffolded project. Empty means "ask"
 # (default yes); --git yes|no sets it non-interactively. Ignored in --apply mode.
@@ -67,10 +71,16 @@ TRELLIS_INITIALIZED=0
 usage() {
   cat <<EOF
 Usage:
-  ${SCRIPT_NAME} [options]
+  ${SCRIPT_NAME} [options] [PROJECT]
+
+PROJECT is an optional bare positional project folder name (like --name NAME);
+used only when the current directory is not empty. Cannot be combined with
+--name or --apply.
 
 Options:
   --name NAME              Project folder name when current directory is not empty.
+                           Equivalent to the bare PROJECT argument, but they cannot
+                           be used together.
   --git yes|no             Whether to run git init in the new project (default: yes).
                            Ignored with --apply. Skipped if already a git repository.
   --profile MODE           Project profile for a NEW project: service | tool | ask.
@@ -139,12 +149,14 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --name)
       require_arg "$1" "${2:-}"
+      [[ "${PROJECT_NAME_POSITIONAL}" -eq 1 ]] && die "conflicting project name: ${PROJECT_NAME} (use one of <PROJECT> or --name)"
       PROJECT_NAME="$2"
       shift 2
       ;;
     --name=*)
       PROJECT_NAME="${1#*=}"
       require_arg "--name" "${PROJECT_NAME}"
+      [[ "${PROJECT_NAME_POSITIONAL}" -eq 1 ]] && die "conflicting project name: ${PROJECT_NAME} (use one of <PROJECT> or --name)"
       shift
       ;;
     --trellis)
@@ -248,7 +260,18 @@ while [[ $# -gt 0 ]]; do
       exit 0
       ;;
     *)
-      die "unknown option: $1"
+      case "$1" in
+        -*)
+          die "unknown option: $1"
+          ;;
+        *)
+          # Bare positional project name: `vibe-init <PROJECT>`.
+          [[ -n "${PROJECT_NAME}" ]] && die "conflicting project name: ${PROJECT_NAME} (use one of <PROJECT> or --name)"
+          PROJECT_NAME="$1"
+          PROJECT_NAME_POSITIONAL=1
+          shift
+          ;;
+      esac
       ;;
   esac
 done
@@ -974,6 +997,10 @@ main() {
       service|tool|ask) ;;
       *) die "--profile must be service, tool, or ask" ;;
     esac
+  fi
+
+  if [[ "${PROJECT_NAME_POSITIONAL}" -eq 1 && "${APPLY_MODE}" -eq 1 ]]; then
+    die "the <PROJECT> name argument is not valid with --apply (--apply targets the current directory)"
   fi
 
   if [[ "${APPLY_MODE}" -eq 1 ]]; then
