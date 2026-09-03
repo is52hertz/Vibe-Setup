@@ -118,7 +118,7 @@ copy_template_file() {
 
   ensure_dir "$(dirname -- "${target}")"
   if [[ "${DRY_RUN}" -eq 1 ]]; then
-    info "dry-run: copy ${source} -> ${target}"
+    info "dry-run: copy ${relative_path} -> ${target}"
   else
     cp "${source}" "${target}"
     info "copied ${target}"
@@ -181,7 +181,11 @@ choose_apply_files() {
   local project_dir="$1"
   local rel="" status="" label="" input="" token="" ok=""
   local -a available=()
+  local -a labels=()
   local -a tokens=()
+  local -a choices=()
+  local listing=0
+  local index=0
 
   # Non-interactive subset wins over any prompting.
   if [[ -n "${APPLY_FILES}" ]]; then
@@ -189,9 +193,13 @@ choose_apply_files() {
     return
   fi
 
-  # List every managed file with its status; only files with a present source
-  # are selectable (numbered).
-  printf '[vibe-init] template files (set: %s):\n' "${TEMPLATE_SET_LABEL}" >&2
+  # List every managed file with its status; only files with a present source is
+  # selectable. The checklist below repeats the names, so the list is printed
+  # only for the plain path that has no checklist.
+  if ! _prompt_can_draw || [[ "${ASSUME_DEFAULTS}" -eq 1 || ! -t 0 ]]; then
+    listing=1
+    ui_section "Template files (${TEMPLATE_SET_LABEL})"
+  fi
   for rel in "${TEMPLATE_FILES[@]}"; do
     status="$(apply_file_status "${rel}" "${project_dir}")"
     case "${status}" in
@@ -206,12 +214,13 @@ choose_apply_files() {
         label="new -> creates ${rel}"
         ;;
       missing-source)
-        printf '       %-38s %s\n' "${rel}" "(not in this template set)" >&2
+        [[ "${listing}" -eq 1 ]] && ui_kv "${rel}" "not in this set" "${UI_PATH_WIDTH}"
         continue
         ;;
     esac
     available+=("${rel}")
-    printf '  [%d]  %-38s %s\n' "${#available[@]}" "${rel}" "${label}" >&2
+    labels+=("${label}")
+    [[ "${listing}" -eq 1 ]] && ui_kv "${rel}" "${label}" "${UI_PATH_WIDTH}"
   done
 
   if [[ "${#available[@]}" -eq 0 ]]; then
@@ -221,6 +230,23 @@ choose_apply_files() {
 
   if [[ "${ASSUME_DEFAULTS}" -eq 1 || ! -t 0 ]]; then
     APPLY_SELECTED=("${available[@]}")
+    return
+  fi
+
+  # With a terminal that can draw, pick them off a checklist. Everything starts
+  # ticked, so Enter keeps the copy-everything default one keystroke away.
+  if _prompt_can_draw; then
+    choices=()
+    index=0
+    for rel in "${available[@]}"; do
+      choices+=("$(prompt_opt "${rel}" "${rel}" "${labels[${index}]}")")
+      index=$(( index + 1 ))
+    done
+
+    APPLY_SELECTED=()
+    while IFS= read -r rel; do
+      [[ -n "${rel}" ]] && APPLY_SELECTED+=("${rel}")
+    done < <(ui_multiselect "Which files?" "all" "${choices[@]}")
     return
   fi
 
@@ -372,13 +398,12 @@ show_project_diagnostics() {
     fi
   fi
 
-  ui_box_start "Project AI Environment Status"
-  ui_box_row "Git Repo" "${git_status}"
-  ui_box_row "Trellis" "${trellis_status}"
-  ui_box_row "Trellis Tools" "${trellis_tools}"
-  ui_box_row "CC-Workflow" "${cc_workflow_status}"
-  ui_box_row "AGENTS.md" "${agents_status}"
-  ui_box_end
+  ui_section "Project environment"
+  ui_kv "Git repo"      "${git_status}"
+  ui_kv "Trellis"       "${trellis_status}"
+  ui_kv "Platforms"     "${trellis_tools}"
+  ui_kv "CC-Workflow"   "${cc_workflow_status}"
+  ui_kv "AGENTS.md"     "${agents_status}"
 }
 
 # -----------------------------------------------------------------------------
@@ -465,42 +490,51 @@ toggle_cc_workflow() {
 manage_trellis() {
   local project_dir="$1"
   local choice=""
+  local plat=""
+  local -a actions=()
+  local -a platforms=()
 
   if ! trellis_has_project "${project_dir}"; then
     ui_warn "Trellis is not initialized in this project."
     if ask_yes_no "Initialize Trellis now?" "yes"; then
-      install_and_init_trellis "${project_dir}"
+      resolve_trellis_setup
+      if [[ "${TRELLIS_READY}" -eq 1 ]]; then
+        run_trellis_init "${project_dir}"
+      fi
     fi
     return
   fi
 
   while true; do
-    printf '\n%s--- Trellis Management ---%s\n' "${UI_BOLD}" "${UI_RESET}" >&2
-    printf '  [1] Add AI platform(s) (e.g. --codex, --cursor)\n' >&2
-    printf '  [2] Update project configuration (trellis update)\n' >&2
-    printf '  [3] Upgrade global Trellis CLI\n' >&2
-    printf '  [0] Return to dashboard\n' >&2
+    actions=()
+    actions+=("$(prompt_opt platform "Add an AI platform"      "trellis init --<platform>")")
+    actions+=("$(prompt_opt update   "Update the project"      "trellis update")")
+    actions+=("$(prompt_opt upgrade  "Upgrade the Trellis CLI" "npm install -g")")
+    actions+=("$(prompt_opt back     "Back")")
 
-    choice="$(ask_value "Select Trellis action" "0")"
+    choice="$(ui_select "Trellis management" "back" "${actions[@]}")"
     case "${choice}" in
-      1)
-        local plat
-        plat="$(ask_value "Enter platform flag (e.g. --cursor, --codex)" "--cursor")"
+      platform)
+        platforms=()
+        platforms+=("$(prompt_opt --cursor   "Cursor")")
+        platforms+=("$(prompt_opt --codex    "Codex")")
+        platforms+=("$(prompt_opt --claude   "Claude Code")")
+        platforms+=("$(prompt_opt --gemini   "Gemini CLI")")
+        platforms+=("$(prompt_opt --opencode "OpenCode")")
+
+        plat="$(ui_select "Which platform?" "--cursor" "${platforms[@]}")"
         if [[ -n "${plat}" ]]; then
           trellis_add_platform "${project_dir}" "${plat}"
         fi
         ;;
-      2)
+      update)
         trellis_update_project "${project_dir}"
         ;;
-      3)
+      upgrade)
         trellis_upgrade_cli
         ;;
-      0|q|quit)
-        break
-        ;;
       *)
-        ui_warn "Invalid selection."
+        break
         ;;
     esac
   done
@@ -562,6 +596,8 @@ toggle_trellis_integration() {
 orchestrator_dashboard() {
   local project_dir="$1"
   local choice=""
+  local cc_state=""
+  local -a actions=()
 
   # Non-interactive (-y, no TTY) or driven by an explicit --files / --on-exists
   # policy: no menu, just the diagnostics once and the safe standard sync, so
@@ -578,34 +614,41 @@ orchestrator_dashboard() {
   # Interactive loop. The diagnostics are rendered here and nowhere else: an
   # extra call outside the loop is what used to print the whole card twice.
   while true; do
-    ui_banner "Project Orchestrator Dashboard"
+    if [[ -f "${project_dir}/CC-Cowork-Workflow.md" ]]; then
+      cc_state="currently on"
+    else
+      cc_state="currently off"
+    fi
+
     show_project_diagnostics "${project_dir}"
 
-    printf '\n%sActions:%s\n' "${UI_BOLD}" "${UI_RESET}" >&2
-    printf '  [1] 📋 Sync / apply template files (%s%s%s)\n' "${UI_CYAN}" "${TEMPLATE_SET_LABEL}" "${UI_RESET}" >&2
-    printf '  [2] 🌿 Trellis management (platforms, update, CLI upgrade)\n' >&2
-    printf '  [3] ⚙️  Toggle the CC-Workflow feature\n' >&2
-    printf '  [4] 🔗 Toggle the Trellis integration block in AGENTS.md\n' >&2
-    printf '  [5] 🚀 Safe sync all (templates + checks)\n' >&2
-    printf '  [0] Exit\n\n' >&2
+    # Built up in an array rather than nested inline: bash 3.2 mis-parses a
+    # command substitution that closes immediately inside another one.
+    actions=()
+    actions+=("$(prompt_opt sync    "Sync template files"      "${TEMPLATE_SET_LABEL}")")
+    actions+=("$(prompt_opt trellis "Trellis management"       "platforms, update, upgrade")")
+    actions+=("$(prompt_opt ccflow  "Toggle CC-Workflow"       "${cc_state}")")
+    actions+=("$(prompt_opt integ   "Toggle Trellis block"     "in AGENTS.md")")
+    actions+=("$(prompt_opt syncall "Sync everything and exit" "templates + Trellis update")")
+    actions+=("$(prompt_opt quit    "Exit")")
 
-    choice="$(ask_value "Select action" "1")"
+    choice="$(ui_select "What would you like to do?" "sync" "${actions[@]}")"
     case "${choice}" in
-      1)
+      sync)
         info "applying template set: ${TEMPLATE_SET_LABEL}"
         apply_templates "${project_dir}"
         suggest_template_merges
         ;;
-      2)
+      trellis)
         manage_trellis "${project_dir}"
         ;;
-      3)
+      ccflow)
         toggle_cc_workflow "${project_dir}"
         ;;
-      4)
+      integ)
         toggle_trellis_integration "${project_dir}"
         ;;
-      5)
+      syncall)
         info "applying template set: ${TEMPLATE_SET_LABEL}"
         apply_templates "${project_dir}"
         suggest_template_merges
@@ -615,12 +658,8 @@ orchestrator_dashboard() {
         ui_ok "All sync tasks finished."
         break
         ;;
-      0|q|exit)
-        ui_info "Exiting dashboard."
-        break
-        ;;
       *)
-        ui_warn "Invalid choice."
+        break
         ;;
     esac
   done

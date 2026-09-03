@@ -30,6 +30,7 @@ CC_WORKFLOW_ENABLED=0
 
 # Source helper modules
 [[ -f "${SCRIPT_DIR}/lib/ui.sh" ]] && . "${SCRIPT_DIR}/lib/ui.sh"
+[[ -f "${SCRIPT_DIR}/lib/prompt.sh" ]] && . "${SCRIPT_DIR}/lib/prompt.sh"
 [[ -f "${SCRIPT_DIR}/lib/block_engine.sh" ]] && . "${SCRIPT_DIR}/lib/block_engine.sh"
 [[ -f "${SCRIPT_DIR}/lib/trellis.sh" ]] && . "${SCRIPT_DIR}/lib/trellis.sh"
 # Optional comma/space separated subset of TEMPLATE_FILES to copy in apply mode.
@@ -88,6 +89,10 @@ TEMPLATE_SET_LABEL=""
 # templates/blocks/integrations/). Currently just "trellis" or empty.
 TEMPLATE_INTEGRATIONS=""
 TRELLIS_INITIALIZED=0
+# Filled in by resolve_trellis_setup, consumed by run_trellis_init.
+TRELLIS_READY=0
+TRELLIS_DEVELOPER_NAME=""
+TRELLIS_PLATFORM_ARGS=()
 
 # Remove the materialized template set. Registered on EXIT, so an interrupted or
 # failed run does not leave a staging directory behind.
@@ -161,16 +166,19 @@ Behavior:
 EOF
 }
 
+# The three message levels. lib/ui.sh renders them: a gutter line for a human at
+# a terminal, the familiar `[vibe-init] …` line everywhere else. The body of the
+# message is identical either way, so anything that greps the output still works.
 info() {
-  printf '[vibe-init] %s\n' "$*" >&2
+  ui_log "$*"
 }
 
 warn() {
-  printf '[vibe-init] warning: %s\n' "$*" >&2
+  ui_warn "$*"
 }
 
 die() {
-  printf '[vibe-init] error: %s\n' "$*" >&2
+  ui_error "$*"
   exit 1
 }
 
@@ -331,10 +339,16 @@ normalize_yes_no() {
   esac
 }
 
+# Ask for a free-text value; echoes the answer.
+#
+#   --yes with a default        take it, ask nothing
+#   --yes without a default     still ask, because there is nothing to fall back
+#                               on (a project name has no sensible default)
+#   no terminal on stdin        take the default, or die if there is none
+#   otherwise                   ask
 ask_value() {
   local question="$1"
   local default_value="${2:-}"
-  local value=""
 
   if [[ "${ASSUME_DEFAULTS}" -eq 1 && -n "${default_value}" ]]; then
     printf '%s\n' "${default_value}"
@@ -347,57 +361,24 @@ ask_value() {
     return
   fi
 
-  if [[ -n "${default_value}" ]]; then
-    printf '%s [%s]: ' "${question}" "${default_value}" >&2
-  else
-    printf '%s: ' "${question}" >&2
-  fi
-
-  read -r value
-  if [[ -z "${value}" ]]; then
-    value="${default_value}"
-  fi
-  printf '%s\n' "${value}"
+  ui_input "${question}" "${default_value}"
 }
 
+# Ask a yes/no question; returns 0 for yes. --yes and a non-terminal stdin both
+# take the default without asking.
 ask_yes_no() {
   local question="$1"
   local default_value="$2"
   local normalized_default=""
-  local value=""
-  local normalized_value=""
-  local prompt_suffix=""
 
   normalized_default="$(normalize_yes_no "${default_value}")" || die "invalid yes/no default: ${default_value}"
 
-  if [[ "${ASSUME_DEFAULTS}" -eq 1 ]]; then
+  if [[ "${ASSUME_DEFAULTS}" -eq 1 || ! -t 0 ]]; then
     [[ "${normalized_default}" == "yes" ]]
     return
   fi
 
-  if [[ ! -t 0 ]]; then
-    [[ "${normalized_default}" == "yes" ]]
-    return
-  fi
-
-  if [[ "${normalized_default}" == "yes" ]]; then
-    prompt_suffix='[Y/n]'
-  else
-    prompt_suffix='[y/N]'
-  fi
-
-  while true; do
-    printf '%s %s: ' "${question}" "${prompt_suffix}" >&2
-    read -r value
-    if [[ -z "${value}" ]]; then
-      value="${normalized_default}"
-    fi
-    if normalized_value="$(normalize_yes_no "${value}")"; then
-      [[ "${normalized_value}" == "yes" ]]
-      return
-    fi
-    warn "please answer yes or no"
-  done
+  ui_confirm "${question}" "${normalized_default}"
 }
 
 validate_project_name() {
@@ -442,12 +423,11 @@ is_effectively_empty_dir() {
 }
 
 run_cmd() {
+  local rendered=""
+
   if [[ "${DRY_RUN}" -eq 1 ]]; then
-    {
-      printf '[vibe-init] dry-run:'
-      printf ' %q' "$@"
-      printf '\n'
-    } >&2
+    rendered="$(printf ' %q' "$@")"
+    info "dry-run:${rendered}"
     return
   fi
   "$@"
@@ -455,14 +435,12 @@ run_cmd() {
 
 run_in_dir() {
   local dir="$1"
+  local rendered=""
   shift
 
   if [[ "${DRY_RUN}" -eq 1 ]]; then
-    {
-      printf '[vibe-init] dry-run: cd %q &&' "${dir}"
-      printf ' %q' "$@"
-      printf '\n'
-    } >&2
+    rendered="$(printf ' %q' "$@")"
+    info "dry-run: cd $(printf '%q' "${dir}") &&${rendered}"
     return
   fi
 
@@ -513,7 +491,7 @@ copy_or_write_placeholder() {
   if [[ -f "${source}" ]]; then
     ensure_dir "$(dirname -- "${destination}")"
     if [[ "${DRY_RUN}" -eq 1 ]]; then
-      info "dry-run: copy ${source} -> ${destination}"
+      info "dry-run: copy ${relative_path} -> ${destination}"
     else
       cp "${source}" "${destination}"
       info "copied ${destination}"
@@ -548,7 +526,7 @@ copy_optional_template() {
 
   ensure_dir "$(dirname -- "${destination}")"
   if [[ "${DRY_RUN}" -eq 1 ]]; then
-    info "dry-run: copy ${source} -> ${destination}"
+    info "dry-run: copy ${relative_path} -> ${destination}"
   else
     cp "${source}" "${destination}"
     info "copied ${destination}"
@@ -686,7 +664,7 @@ merge_secret_deny_rules() {
   fi
 
   if [[ "${DRY_RUN}" -eq 1 ]]; then
-    info "dry-run: merge permissions.deny from ${template_settings} into ${settings}"
+    info "dry-run: merge permissions.deny from the template set into ${settings}"
     return
   fi
 
@@ -732,14 +710,50 @@ PY
   fi
 }
 
-install_and_init_trellis() {
-  local project_dir="$1"
+# Ask which AI platforms Trellis should wire up. Offers the combinations people
+# actually pick, with an escape hatch for anything else; --platforms and the
+# non-interactive paths bypass it entirely.
+ask_platforms() {
+  local default_flags="--claude --codex"
+  local choice=""
+  local -a options=()
+
+  if [[ "${ASSUME_DEFAULTS}" -eq 1 || ! -t 0 ]]; then
+    printf '%s\n' "${default_flags}"
+    return
+  fi
+
+  options+=("$(prompt_opt "--claude --codex" "Claude Code + Codex")")
+  options+=("$(prompt_opt "--claude" "Claude Code only")")
+  options+=("$(prompt_opt "--claude --codex --cursor" "Claude Code + Codex + Cursor")")
+  options+=("$(prompt_opt "none" "No platform flags")")
+  options+=("$(prompt_opt "custom" "Something else" "type the flags yourself")")
+
+  choice="$(ui_select "Trellis platforms" "${default_flags}" "${options[@]}")"
+  if [[ "${choice}" == "custom" ]]; then
+    choice="$(ui_input "Trellis platform flags" "${default_flags}")"
+  fi
+
+  printf '%s\n' "${choice}"
+}
+
+# Ask everything Trellis needs, up front and in one block: the install gate,
+# the developer identity and the platform flags. Sets TRELLIS_READY when the run
+# should go on to initialize, plus TRELLIS_DEVELOPER_NAME and
+# TRELLIS_PLATFORM_ARGS for run_trellis_init.
+#
+# Separated from the initialization itself because AGENTS.md has to be assembled
+# and seeded before `trellis init` runs, and the profile that goes into it is
+# asked after this block. Keeping the questions together is worth the split.
+resolve_trellis_setup() {
   local developer_name="${DEVELOPER_NAME}"
   local default_name=""
   local platform_input="${TRELLIS_PLATFORMS}"
   local normalized_platforms=""
-  local platform_args=()
   local installed_version=""
+
+  TRELLIS_READY=0
+  TRELLIS_PLATFORM_ARGS=()
 
   check_trellis_prerequisites
 
@@ -770,9 +784,10 @@ install_and_init_trellis() {
     info "using Trellis developer name from \$DEVELOPER_NAME: ${developer_name} (override with --developer-name)"
   fi
   validate_developer_name "${developer_name}"
+  TRELLIS_DEVELOPER_NAME="${developer_name}"
 
   if [[ -z "${platform_input}" ]]; then
-    platform_input="$(ask_value "Trellis platform flags ('n' or 'none' for no flags)" "--claude --codex")"
+    platform_input="$(ask_platforms)"
   fi
 
   # 'n' / 'none' (any case) opts out: pass no platform flags to trellis init.
@@ -785,15 +800,21 @@ install_and_init_trellis() {
 
   normalized_platforms="${platform_input//,/ }"
   if [[ -n "${normalized_platforms// /}" ]]; then
-    IFS=' ' read -r -a platform_args <<< "${normalized_platforms}"
+    IFS=' ' read -r -a TRELLIS_PLATFORM_ARGS <<< "${normalized_platforms}"
   fi
 
-  # Seed AGENTS.md before trellis init so trellis (skip-existing) preserves our
-  # guidance and only manages the TRELLIS block inside it. Done here, after the
-  # install gate, so a declined install never leaves a stray TRELLIS block.
+  TRELLIS_READY=1
+}
+
+# Seed AGENTS.md and run `trellis init` with the answers resolved earlier. The
+# seeding has to happen first so trellis (skip-existing) preserves our guidance
+# and only manages the TRELLIS block inside the file.
+run_trellis_init() {
+  local project_dir="$1"
+  local init_args=()
+
   copy_or_write_placeholder "AGENTS.md" "${project_dir}/AGENTS.md" "$(agents_placeholder)"
 
-  local init_args=()
   if [[ "${ASSUME_DEFAULTS}" -eq 1 || ! -t 0 ]]; then
     # Non-interactive: -y accepts trellis prompts (e.g. spec template) and
     # already implies skip-existing, so our seeded AGENTS.md is preserved.
@@ -805,9 +826,9 @@ install_and_init_trellis() {
   fi
 
   info "initializing Trellis in ${project_dir}"
-  # ${platform_args[@]+...} expands to nothing (not an error) when the array is
-  # empty under set -u on bash 3.2.
-  run_in_dir "${project_dir}" trellis init "${init_args[@]}" -u "${developer_name}" ${platform_args[@]+"${platform_args[@]}"}
+  # ${TRELLIS_PLATFORM_ARGS[@]+...} expands to nothing (not an error) when the
+  # array is empty under set -u on bash 3.2.
+  run_in_dir "${project_dir}" trellis init "${init_args[@]}" -u "${TRELLIS_DEVELOPER_NAME}" ${TRELLIS_PLATFORM_ARGS[@]+"${TRELLIS_PLATFORM_ARGS[@]}"}
 
   merge_secret_deny_rules "${project_dir}"
   TRELLIS_INITIALIZED=1
@@ -889,20 +910,18 @@ maybe_init_git() {
 # input to the assembly, not a post-hoc edit of a generated file.
 resolve_profile() {
   local choice="" lower=""
+  local -a options=()
 
   if [[ -n "${PROFILE}" ]]; then
     lower="$(printf '%s' "${PROFILE}" | tr '[:upper:]' '[:lower:]')"
   elif [[ "${ASSUME_DEFAULTS}" -eq 1 || ! -t 0 ]]; then
     lower="ask"
   else
-    while true; do
-      choice="$(ask_value "Project profile: service / tool / ask ('ask' = let the AI decide later)" "ask")"
-      lower="$(printf '%s' "${choice}" | tr '[:upper:]' '[:lower:]')"
-      case "${lower}" in
-        service|tool|ask) break ;;
-        *) warn "please answer service, tool, or ask" ;;
-      esac
-    done
+    options+=("$(prompt_opt service "Service / backend" "APIs, datastores, long-running")")
+    options+=("$(prompt_opt tool "Tool / script" "small CLIs, utilities")")
+    options+=("$(prompt_opt ask "Decide later" "keep both, let the project's AI resolve it")")
+    choice="$(ui_select "What kind of project is this?" "ask" "${options[@]}")"
+    lower="$(printf '%s' "${choice}" | tr '[:upper:]' '[:lower:]')"
   fi
 
   printf '%s\n' "${lower}"
@@ -1016,11 +1035,15 @@ run_apply_mode() {
   # codebase, which is also why --profile is rejected with --apply.
   prepare_template_set "ask" "${TEMPLATE_INTEGRATIONS}" "${CC_WORKFLOW_ENABLED}"
 
+  ui_intro "vibe-init" "project orchestrator"
+
   [[ -f "${apply_lib}" ]] || die "apply library not found: ${apply_lib}"
   # shellcheck source=lib/apply.sh
   . "${apply_lib}"
 
   orchestrator_dashboard "${target_dir}"
+
+  ui_outro "done  ${target_dir}"
 }
 
 main() {
@@ -1069,14 +1092,15 @@ main() {
   # project it is, one optional extra, then the heavyweight Trellis block (which
   # asks its own follow-ups and installs software). Nothing is written until the
   # whole shape of the project is settled.
+  ui_intro "vibe-init" "AI agent setup for a new project"
+
   project_dir="$(choose_project_dir)"
 
   maybe_init_git "${project_dir}"
 
-  profile="$(resolve_profile)"
-
-  CC_WORKFLOW_ENABLED="$(resolve_cc_workflow)"
-
+  # Trellis first among the content questions: it is the heaviest choice, it can
+  # install software, and it asks its own follow-ups — all of which belong in one
+  # uninterrupted block rather than split around the lighter questions.
   if [[ -n "${TRELLIS_CHOICE}" ]]; then
     normalized_trellis_choice="$(normalize_yes_no "${TRELLIS_CHOICE}")" || die "--trellis must be yes or no"
     if [[ "${normalized_trellis_choice}" == "yes" ]]; then
@@ -1089,23 +1113,24 @@ main() {
   fi
 
   if [[ "${install_trellis}" -eq 1 ]]; then
-    TEMPLATE_INTEGRATIONS="trellis"
+    resolve_trellis_setup
+    if [[ "${TRELLIS_READY}" -eq 1 ]]; then
+      TEMPLATE_INTEGRATIONS="trellis"
+    else
+      # Declined at the install gate: carry on without the integration block.
+      install_trellis=0
+    fi
   fi
+
+  profile="$(resolve_profile)"
+
+  CC_WORKFLOW_ENABLED="$(resolve_cc_workflow)"
+
   prepare_template_set "${profile}" "${TEMPLATE_INTEGRATIONS}" "${CC_WORKFLOW_ENABLED}"
   info "template set: ${TEMPLATE_SET_LABEL}"
 
   if [[ "${install_trellis}" -eq 1 ]]; then
-    # Seeds AGENTS.md from the set before running trellis init, so Trellis keeps
-    # our guidance and only manages its own block inside the file.
-    install_and_init_trellis "${project_dir}"
-
-    # The install can still be declined at the gate, in which case nothing was
-    # seeded yet and the set has to lose the Trellis integration block again.
-    if [[ "${TRELLIS_INITIALIZED}" -eq 0 ]]; then
-      TEMPLATE_INTEGRATIONS=""
-      prepare_template_set "${profile}" "${TEMPLATE_INTEGRATIONS}" "${CC_WORKFLOW_ENABLED}"
-      info "template set: ${TEMPLATE_SET_LABEL}"
-    fi
+    run_trellis_init "${project_dir}"
   fi
 
   write_project_placeholders "${project_dir}"
@@ -1116,9 +1141,8 @@ main() {
     info "AGENTS.md assembled with the '${profile}' profile"
   fi
 
-  info "done"
-  info "project directory: ${project_dir}"
   info "next: edit AGENTS.md with real project guidance"
+  ui_outro "done  ${project_dir}"
 }
 
 main "$@"

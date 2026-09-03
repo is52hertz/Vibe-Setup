@@ -1,19 +1,35 @@
 #!/usr/bin/env bash
-# lib/ui.sh — colors, semantic symbols and the dashboard box.
+# lib/ui.sh — the visual language: colors, glyphs, and the gutter layout.
 #
-# Sourced by vibe-init.sh and lib/apply.sh. Both run under `set -euo pipefail`,
-# so every variable this file defines must be defined on *every* branch: a name
-# that only exists in the color branch takes the whole script down with an
-# "unbound variable" the moment output is piped or NO_COLOR is set.
+# Sourced by vibe-init.sh and lib/apply.sh. Everything is written to stderr, so
+# stdout stays clean for command substitution (ask_value and friends echo their
+# result there).
+#
+# Two renderings of the same messages:
+#
+#   Rich   — a human at a terminal. A left gutter threads the whole run together
+#            (┌ at the start, │ down the side, └ at the end), the way a modern
+#            scaffolder reads. Steps, prompts and results all hang off it.
+#   Plain  — a pipe, a file, NO_COLOR, TERM=dumb. The familiar `[vibe-init] …`
+#            lines, one per message, which scripts and the test suite parse.
+#
+# The message bodies are identical in both; only the frame changes.
+#
+# Both callers run under `set -euo pipefail`, so every variable defined in one
+# branch below must be defined in the other too — a name that exists only in the
+# rich branch takes the whole script down with an "unbound variable" the first
+# time output is piped.
 #
 # Compatible with macOS Bash 3.2.
 
-# Color is for a human at a terminal. Anything else — a pipe, a file, NO_COLOR,
-# TERM=dumb — gets plain ASCII that greps and diffs cleanly.
+# Color and layout are decided together: a caller that asked for no color (or is
+# not a terminal) gets the plain frame as well. Detection looks at stderr, since
+# that is where all of this goes.
 UI_COLOR_ENABLED=0
-if [[ -t 1 && -z "${NO_COLOR:-}" && "${TERM:-}" != "dumb" ]]; then
+if [[ -t 2 && -z "${NO_COLOR:-}" && "${TERM:-}" != "dumb" ]]; then
   UI_COLOR_ENABLED=1
 fi
+UI_RICH="${UI_COLOR_ENABLED}"
 
 if [[ "${UI_COLOR_ENABLED}" -eq 1 ]]; then
   UI_RESET=$'\033[0m'
@@ -27,19 +43,20 @@ if [[ "${UI_COLOR_ENABLED}" -eq 1 ]]; then
   UI_CYAN=$'\033[36m'
   UI_WHITE=$'\033[37m'
 
-  UI_SYM_OK="${UI_GREEN}✓${UI_RESET}"
-  UI_SYM_INFO="${UI_CYAN}ℹ${UI_RESET}"
-  UI_SYM_WARN="${UI_YELLOW}⚠${UI_RESET}"
-  UI_SYM_ERR="${UI_RED}✗${UI_RESET}"
-  UI_SYM_DOT="${UI_DIM}○${UI_RESET}"
-  UI_SYM_ARROW="${UI_CYAN}➜${UI_RESET}"
+  # The gutter, drawn dim so the content reads first.
+  UI_G_TOP="┌"
+  UI_G_BAR="│"
+  UI_G_END="└"
 
-  UI_BOX_TL="┌"
-  UI_BOX_TR="┐"
-  UI_BOX_BL="└"
-  UI_BOX_BR="┘"
-  UI_BOX_H="─"
-  UI_BOX_V="│"
+  UI_S_STEP="◇"      # a settled step
+  UI_S_ACTIVE="◆"    # the question being asked
+  UI_S_OK="✓"
+  UI_S_WARN="▲"
+  UI_S_ERR="■"
+  UI_S_ON="●"        # selected option
+  UI_S_OFF="○"       # unselected option
+  UI_S_CHECKED="■"   # ticked box in a multi-select
+  UI_S_UNCHECKED="□"
 else
   UI_RESET=""
   UI_BOLD=""
@@ -52,27 +69,29 @@ else
   UI_CYAN=""
   UI_WHITE=""
 
-  UI_SYM_OK="[OK]"
-  UI_SYM_INFO="[i]"
-  UI_SYM_WARN="[!]"
-  UI_SYM_ERR="[X]"
-  UI_SYM_DOT="[-]"
-  UI_SYM_ARROW="->"
+  UI_G_TOP="+"
+  UI_G_BAR="|"
+  UI_G_END="+"
 
-  UI_BOX_TL="+"
-  UI_BOX_TR="+"
-  UI_BOX_BL="+"
-  UI_BOX_BR="+"
-  UI_BOX_H="-"
-  UI_BOX_V="|"
+  UI_S_STEP="*"
+  UI_S_ACTIVE="*"
+  UI_S_OK="v"
+  UI_S_WARN="!"
+  UI_S_ERR="x"
+  UI_S_ON="(*)"
+  UI_S_OFF="( )"
+  UI_S_CHECKED="[x]"
+  UI_S_UNCHECKED="[ ]"
 fi
 
-# Inner width of the dashboard box, shared by all three of its rows so the
-# borders actually line up: content is UI_BOX_WIDTH columns between the two
-# verticals, split into two leading spaces, the label, " : ", and the value.
-UI_BOX_WIDTH=62
-UI_BOX_LABEL_WIDTH=18
-UI_BOX_VALUE_WIDTH=$(( UI_BOX_WIDTH - UI_BOX_LABEL_WIDTH - 5 ))
+# Prefix for plain-mode lines. Unchanged from the original output format: scripts
+# and test/dry-run.sh match on what follows it.
+UI_PLAIN_PREFIX="[vibe-init]"
+
+# Default width of the label column in key/value rows.
+UI_LABEL_WIDTH=16
+# Wider column for rows labelled with a file path.
+UI_PATH_WIDTH=38
 
 _ui_repeat() {
   local ch="$1"
@@ -85,9 +104,9 @@ _ui_repeat() {
   printf '%s' "${out}"
 }
 
-# Force a value onto one line and into a fixed width. A newline inside a box row
-# splits the border across two lines, and `git rev-parse` on a repository with no
-# commits is exactly the kind of thing that returns two lines.
+# Flatten a value onto one line and pad it to a fixed width. Newlines are the
+# hazard here: `git rev-parse` on a repository with no commits returns two lines,
+# and one of those in a status row breaks the layout.
 _ui_cell() {
   local text="$1"
   local width="$2"
@@ -102,53 +121,134 @@ _ui_cell() {
   printf '%s%s' "${text}" "$(_ui_repeat " " $(( width - ${#text} )))"
 }
 
-ui_banner() {
-  local subtitle="${1:-AI-Assisted Engineering Environment Toolkit}"
-
-  printf '\n%s%s✦ vibe-init%s %s%s%s\n' \
-    "${UI_BOLD}" "${UI_CYAN}" "${UI_RESET}" "${UI_DIM}" "${subtitle}" "${UI_RESET}" >&2
-  printf '%s%s%s\n\n' "${UI_DIM}" "$(_ui_repeat "${UI_BOX_H}" 60)" "${UI_RESET}" >&2
+# One line hanging off the gutter, or one plain-prefixed line.
+_ui_emit() {
+  if [[ "${UI_RICH}" -eq 1 ]]; then
+    printf '%s%s%s  %s\n' "${UI_DIM}" "${UI_G_BAR}" "${UI_RESET}" "$1" >&2
+  else
+    printf '%s %s\n' "${UI_PLAIN_PREFIX}" "$1" >&2
+  fi
 }
 
+# Open the run. In plain mode this is a single ordinary line, so nothing that
+# parses the output has to know about the frame.
+ui_intro() {
+  local title="$1"
+  local subtitle="${2:-}"
+
+  if [[ "${UI_RICH}" -ne 1 ]]; then
+    if [[ -n "${subtitle}" ]]; then
+      printf '%s %s — %s\n' "${UI_PLAIN_PREFIX}" "${title}" "${subtitle}" >&2
+    else
+      printf '%s %s\n' "${UI_PLAIN_PREFIX}" "${title}" >&2
+    fi
+    return
+  fi
+
+  printf '\n%s%s%s  %s%s%s' \
+    "${UI_DIM}" "${UI_G_TOP}" "${UI_RESET}" "${UI_BOLD}${UI_CYAN}" "${title}" "${UI_RESET}" >&2
+  if [[ -n "${subtitle}" ]]; then
+    printf '  %s%s%s' "${UI_DIM}" "${subtitle}" "${UI_RESET}" >&2
+  fi
+  printf '\n' >&2
+}
+
+# Close the run.
+ui_outro() {
+  if [[ "${UI_RICH}" -ne 1 ]]; then
+    printf '%s %s\n' "${UI_PLAIN_PREFIX}" "$1" >&2
+    return
+  fi
+
+  ui_gap
+  printf '%s%s%s  %s%s%s\n\n' \
+    "${UI_DIM}" "${UI_G_END}" "${UI_RESET}" "${UI_BOLD}" "$1" "${UI_RESET}" >&2
+}
+
+# A bare gutter line, for breathing room between steps. Nothing in plain mode.
+ui_gap() {
+  [[ "${UI_RICH}" -eq 1 ]] || return 0
+  printf '%s%s%s\n' "${UI_DIM}" "${UI_G_BAR}" "${UI_RESET}" >&2
+}
+
+# A settled step: the question, then the answer under it. The breathing room goes
+# *before* a prompt rather than after an answer, so log lines emitted between two
+# questions stay attached to the step they came from.
+ui_step() {
+  local label="$1"
+  local value="${2:-}"
+
+  if [[ "${UI_RICH}" -ne 1 ]]; then
+    if [[ -n "${value}" ]]; then
+      printf '%s %s: %s\n' "${UI_PLAIN_PREFIX}" "${label}" "${value}" >&2
+    else
+      printf '%s %s\n' "${UI_PLAIN_PREFIX}" "${label}" >&2
+    fi
+    return
+  fi
+
+  printf '%s%s%s  %s%s%s\n' \
+    "${UI_DIM}" "${UI_S_STEP}" "${UI_RESET}" "${UI_BOLD}" "${label}" "${UI_RESET}" >&2
+  if [[ -n "${value}" ]]; then
+    printf '%s%s%s  %s%s%s\n' \
+      "${UI_DIM}" "${UI_G_BAR}" "${UI_RESET}" "${UI_CYAN}" "${value}" "${UI_RESET}" >&2
+  fi
+}
+
+# A heading for a group of rows or log lines. Like a prompt, it opens with a
+# blank gutter line so it separates from whatever came before it.
 ui_section() {
-  printf '\n%s%s=== %s ===%s\n' "${UI_BOLD}" "${UI_CYAN}" "$1" "${UI_RESET}" >&2
+  if [[ "${UI_RICH}" -ne 1 ]]; then
+    printf '%s %s\n' "${UI_PLAIN_PREFIX}" "$1" >&2
+    return
+  fi
+  ui_gap
+  printf '%s%s%s  %s%s%s\n' \
+    "${UI_DIM}" "${UI_S_STEP}" "${UI_RESET}" "${UI_BOLD}" "$1" "${UI_RESET}" >&2
 }
 
-ui_ok()    { printf '  %s %s\n' "${UI_SYM_OK}" "$*" >&2; }
-ui_info()  { printf '  %s %s\n' "${UI_SYM_INFO}" "$*" >&2; }
-ui_warn()  { printf '  %s %s%s%s\n' "${UI_SYM_WARN}" "${UI_YELLOW}" "$*" "${UI_RESET}" >&2; }
-ui_error() { printf '  %s %s%s%s\n' "${UI_SYM_ERR}" "${UI_RED}" "$*" "${UI_RESET}" >&2; }
+# An aligned label/value row inside a section. The label column defaults to
+# UI_LABEL_WIDTH; pass a third argument where the labels are longer (file paths,
+# say) so they are not truncated into uselessness.
+ui_kv() {
+  local label="$1"
+  local value="$2"
+  local width="${3:-${UI_LABEL_WIDTH}}"
 
-ui_item() {
-  printf '  %s %s%s%s %s\n' \
-    "${UI_SYM_ARROW}" "${UI_BOLD}" "$(_ui_cell "$1:" "${UI_BOX_LABEL_WIDTH}")" "${UI_RESET}" "$2" >&2
+  if [[ "${UI_RICH}" -ne 1 ]]; then
+    printf '%s   %s %s\n' "${UI_PLAIN_PREFIX}" "$(_ui_cell "${label}" "${width}")" "${value}" >&2
+    return
+  fi
+  printf '%s%s%s   %s%s%s %s\n' \
+    "${UI_DIM}" "${UI_G_BAR}" "${UI_RESET}" \
+    "${UI_DIM}" "$(_ui_cell "${label}" "${width}")" "${UI_RESET}" "${value}" >&2
 }
 
-# A single-line-border status card:
-#   ui_box_start "Title"
-#   ui_box_row "Label" "Value"
-#   ui_box_end
-ui_box_start() {
-  local title=" $1 "
-  local fill=$(( UI_BOX_WIDTH - ${#title} - 1 ))
+# The four message levels. Plain mode keeps the exact wording the tool has always
+# printed — "warning: " and "error: " included — so nothing that greps the output
+# has to change.
+ui_log() { _ui_emit "$*"; }
 
-  (( fill < 0 )) && fill=0
-  printf '%s%s%s%s%s%s%s%s%s\n' \
-    "${UI_CYAN}" "${UI_BOX_TL}" "${UI_BOX_H}" \
-    "${UI_BOLD}${UI_WHITE}" "${title}" "${UI_RESET}${UI_CYAN}" \
-    "$(_ui_repeat "${UI_BOX_H}" "${fill}")" "${UI_BOX_TR}" "${UI_RESET}" >&2
+ui_ok() {
+  if [[ "${UI_RICH}" -eq 1 ]]; then
+    _ui_emit "${UI_GREEN}${UI_S_OK}${UI_RESET} $*"
+  else
+    _ui_emit "$*"
+  fi
 }
 
-ui_box_row() {
-  printf '%s%s%s  %s%s%s : %s%s%s%s\n' \
-    "${UI_CYAN}" "${UI_BOX_V}" "${UI_RESET}" \
-    "${UI_BOLD}" "$(_ui_cell "$1" "${UI_BOX_LABEL_WIDTH}")" "${UI_RESET}" \
-    "$(_ui_cell "$2" "${UI_BOX_VALUE_WIDTH}")" \
-    "${UI_CYAN}" "${UI_BOX_V}" "${UI_RESET}" >&2
+ui_warn() {
+  if [[ "${UI_RICH}" -eq 1 ]]; then
+    _ui_emit "${UI_YELLOW}${UI_S_WARN} $*${UI_RESET}"
+  else
+    _ui_emit "warning: $*"
+  fi
 }
 
-ui_box_end() {
-  printf '%s%s%s%s%s\n' \
-    "${UI_CYAN}" "${UI_BOX_BL}" "$(_ui_repeat "${UI_BOX_H}" "${UI_BOX_WIDTH}")" \
-    "${UI_BOX_BR}" "${UI_RESET}" >&2
+ui_error() {
+  if [[ "${UI_RICH}" -eq 1 ]]; then
+    _ui_emit "${UI_RED}${UI_S_ERR} $*${UI_RESET}"
+  else
+    _ui_emit "error: $*"
+  fi
 }
