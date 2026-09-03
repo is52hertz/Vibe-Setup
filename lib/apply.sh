@@ -382,9 +382,9 @@ manage_trellis() {
     printf '  [1] Add AI platform(s) (e.g. --codex, --cursor)\n' >&2
     printf '  [2] Update project configuration (trellis update)\n' >&2
     printf '  [3] Upgrade global Trellis CLI\n' >&2
-    printf '  [0] Return to main menu\n' >&2
+    printf '  [0] Return to dashboard\n' >&2
 
-    choice="$(ask_value "Select an option" "0")"
+    choice="$(ask_value "Select Trellis action" "0")"
     case "${choice}" in
       1)
         local plat
@@ -417,30 +417,36 @@ orchestrator_dashboard() {
   local project_dir="$1"
   local choice=""
 
-  show_project_diagnostics "${project_dir}"
-
   # In non-interactive mode or if specific flags were given, fall back to safe standard apply
   if [[ "${ASSUME_DEFAULTS}" -eq 1 || ! -t 0 || -n "${APPLY_FILES}" || -n "${ON_EXISTS}" ]]; then
+    show_project_diagnostics "${project_dir}"
+    info "applying template set: ${TEMPLATE_DIR}"
     apply_templates "${project_dir}"
     suggest_template_merges
     hint_if_not_git_repo "${project_dir}"
     return
   fi
 
+  # Interactive mode loop: DO NOT print diagnostics outside the loop to avoid double printing!
   while true; do
+    local current_set_name="Base"
+    [[ "${TEMPLATE_DIR}" == *"/trellis" ]] && current_set_name="Trellis"
+
     ui_banner "Project Orchestrator Dashboard"
     show_project_diagnostics "${project_dir}"
 
     printf '\n%sActions:%s\n' "${UI_BOLD}" "${UI_RESET}" >&2
-    printf '  [1] 📋 Sync / Apply Template Files (AGENTS.md, CLAUDE.md, etc.)\n' >&2
+    printf '  [1] 📋 Sync / Apply Template Files (Active Set: %s%s%s)\n' "${UI_CYAN}" "${current_set_name}" "${UI_RESET}" >&2
     printf '  [2] 🌿 Trellis Management (Platforms, Updates, Upgrade)\n' >&2
     printf '  [3] ⚙️  Toggle CC-Workflow Feature\n' >&2
-    printf '  [4] 🚀 Safe Sync All (Templates + Checks)\n' >&2
+    printf '  [4] 🔄 Switch Template Set (Base <-> Trellis)\n' >&2
+    printf '  [5] 🚀 Safe Sync All (Templates + Checks)\n' >&2
     printf '  [0] Exit\n\n' >&2
 
     choice="$(ask_value "Select action" "1")"
     case "${choice}" in
       1)
+        info "applying template set: ${TEMPLATE_DIR}"
         apply_templates "${project_dir}"
         suggest_template_merges
         ;;
@@ -451,6 +457,16 @@ orchestrator_dashboard() {
         toggle_cc_workflow "${project_dir}"
         ;;
       4)
+        if [[ "${current_set_name}" == "Base" ]]; then
+          resolve_template_dir 1
+          ui_ok "Switched active template set to Trellis (${TEMPLATE_DIR})"
+        else
+          resolve_template_dir 0
+          ui_ok "Switched active template set to Base (${TEMPLATE_DIR})"
+        fi
+        ;;
+      5)
+        info "applying template set: ${TEMPLATE_DIR}"
         apply_templates "${project_dir}"
         suggest_template_merges
         if trellis_has_project "${project_dir}"; then
@@ -460,7 +476,7 @@ orchestrator_dashboard() {
         break
         ;;
       0|q|exit)
-        ui_info "Exiting."
+        ui_info "Exiting dashboard."
         break
         ;;
       *)

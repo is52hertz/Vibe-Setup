@@ -974,11 +974,11 @@ run_apply_mode() {
 
   target_dir="$(pwd -P)"
 
-  # Pick the source template set. An explicit --template-dir wins; otherwise ask
-  # base vs Trellis (ask_yes_no returns the default under -y / non-TTY, i.e. base).
+  # Pick the source template set: explicit --template-dir wins;
+  # otherwise smart-detect: if target has .trellis use Trellis set, else Base set.
   if [[ "${TEMPLATE_DIR_EXPLICIT}" -eq 1 ]]; then
     resolve_template_dir 0
-  elif ask_yes_no "Apply from the Trellis template set instead of base?" "no"; then
+  elif [[ -d "${target_dir}/.trellis" ]]; then
     resolve_template_dir 1
   else
     resolve_template_dir 0
@@ -988,11 +988,7 @@ run_apply_mode() {
   # shellcheck source=lib/apply.sh
   . "${apply_lib}"
 
-  info "applying template set: ${TEMPLATE_DIR}"
   orchestrator_dashboard "${target_dir}"
-
-  info "done"
-  info "target directory: ${target_dir}"
 }
 
 main() {
@@ -1036,14 +1032,6 @@ main() {
     else
       CC_WORKFLOW_ENABLED=0
     fi
-  elif [[ "${ASSUME_DEFAULTS}" -eq 1 || ! -t 0 ]]; then
-    CC_WORKFLOW_ENABLED=0
-  else
-    if ask_yes_no "Include CC-Cowork-Workflow (Claude Code external executor co-work)?" "no"; then
-      CC_WORKFLOW_ENABLED=1
-    else
-      CC_WORKFLOW_ENABLED=0
-    fi
   fi
 
   project_dir="$(choose_project_dir)"
@@ -1070,6 +1058,19 @@ main() {
   # (e.g. the user chose Trellis but declined to install it).
   if [[ "${TRELLIS_INITIALIZED}" -eq 0 ]]; then
     resolve_template_dir 0
+  fi
+
+  # Ask CC-Workflow after core project and Trellis choices are settled
+  if [[ -z "${CC_WORKFLOW_CHOICE}" ]]; then
+    if [[ "${ASSUME_DEFAULTS}" -eq 1 || ! -t 0 ]]; then
+      CC_WORKFLOW_ENABLED=0
+    else
+      if ask_yes_no "Include CC-Cowork-Workflow (Claude Code external executor co-work)?" "no"; then
+        CC_WORKFLOW_ENABLED=1
+      else
+        CC_WORKFLOW_ENABLED=0
+      fi
+    fi
   fi
 
   write_project_placeholders "${project_dir}"
