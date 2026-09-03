@@ -53,6 +53,9 @@ ko() { FAIL=$((FAIL + 1)); printf '  FAIL  %s\n        %s\n' "$1" "$2"; }
 
 has()   { if printf '%s' "${OUT}" | grep -qF -- "$2"; then ok "$1"; else ko "$1" "expected to contain: $2"; fi; }
 hasnt() { if printf '%s' "${OUT}" | grep -qF -- "$2"; then ko "$1" "expected NOT to contain: $2"; else ok "$1"; fi; }
+# Like has, but the pattern is an extended regex — used where the point of the
+# assertion is that two things landed on the *same* line.
+hasre() { if printf '%s' "${OUT}" | grep -qE -- "$2"; then ok "$1"; else ko "$1" "expected to match: $2"; fi; }
 rc_is() { if [[ "${RC}" == "$2" ]]; then ok "$1"; else ko "$1" "exit ${RC}, expected $2"; fi; }
 
 echo "vibe-init dry-run tests"
@@ -266,6 +269,52 @@ vi "${d}" --apply -y --dry-run
 has "apply detects Trellis project version" "Project v0.6.16"
 
 
+
+# --- apply: the CC-Workflow document follows the project ------------------
+# A project that does not use the workflow must not be handed the file, and one
+# that does must keep getting it updated.
+d="$(sandbox)"
+vi "${d}" --apply -y --dry-run
+hasnt "apply does not push CC-Workflow onto a project without it" "-> ${d}/CC-Cowork-Workflow.md"
+has   "apply says the file is not in this set"                    "not in this set"
+
+d="$(sandbox)"
+printf 'workflow\n' > "${d}/CC-Cowork-Workflow.md"
+vi "${d}" --apply -y --dry-run
+has "apply keeps syncing CC-Workflow where it is used" "-> ${d}/CC-Cowork-Workflow.md.template"
+
+d="$(sandbox)"
+vi "${d}" --apply -y --dry-run --cc-workflow yes
+has "apply --cc-workflow yes offers the file" "-> ${d}/CC-Cowork-Workflow.md"
+
+d="$(sandbox)"
+printf 'workflow\n' > "${d}/CC-Cowork-Workflow.md"
+vi "${d}" --apply -y --dry-run --cc-workflow no
+hasnt "apply --cc-workflow no leaves it out of the sync" "-> ${d}/CC-Cowork-Workflow.md.template"
+
+# --- apply diagnostics ----------------------------------------------------
+# A repository with no commits is the normal state right after vibe-init runs
+# git init, and it used to render as two lines with a dangling border.
+d="$(sandbox)"
+(cd "${d}" && git init -q . 2>/dev/null)
+vi "${d}" --apply -y --dry-run
+hasre "an unborn branch renders on one line" "Git repo +.*Initialized \\(main\\)"
+hasnt "an unborn branch does not leak the HEAD fallback" "Initialized (HEAD"
+
+# --- no color, no crash ---------------------------------------------------
+# Every message level has to render with color off; a glyph defined on only one
+# branch used to abort the run under set -u the first time anything warned.
+d="$(sandbox)"
+OUT="$(cd "${d}" && NO_COLOR=1 "${VI}" --apply -y --dry-run --files "CC-Cowork-Workflow.md" </dev/null 2>&1)"
+RC=$?
+rc_is "a warning path survives NO_COLOR"  0
+has   "the warning is still reported"     "not part of this template set"
+
+d="$(sandbox)"
+OUT="$(cd "${d}" && NO_COLOR=1 "${VI}" --trellis no --git no -y --dry-run </dev/null 2>&1)"
+RC=$?
+rc_is "a scaffold survives NO_COLOR"      0
+has   "NO_COLOR keeps the plain prefix"   "[vibe-init]"
 
 echo
 if [[ "${FAIL}" -eq 0 ]]; then
