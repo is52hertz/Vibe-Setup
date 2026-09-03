@@ -120,11 +120,21 @@ has   "positional with --apply message" "not valid with --apply"
 # --- profile selection (scaffold) ---
 d="$(sandbox)"
 vi "${d}" --trellis no --git no --dry-run --profile service
-has "--profile service prunes AGENTS.md" "prune ${d}/AGENTS.md to 'service' profile"
+has "--profile service assembles that profile" "AGENTS.md assembled with the 'service' profile"
+has "--profile service labels the set"         "template set: profile=service"
 
 d="$(sandbox)"
 vi "${d}" --trellis no --git no -y --dry-run
-has "default profile keeps all blocks" "leaving all profile blocks"
+has "default profile keeps all blocks" "keeps every profile block"
+
+# The set label reports the whole variant: profile x integrations x features.
+d="$(sandbox)"
+vi "${d}" --trellis yes -y --dry-run --developer-name Dev
+has "trellis run labels the integration" "integrations=trellis"
+
+d="$(sandbox)"
+vi "${d}" --trellis no --git no --cc-workflow yes --dry-run
+has "cc-workflow on shows in the set label" "cc-workflow=on"
 
 vi "$(sandbox)" --dry-run --profile bogus
 rc_is "--profile bogus dies" 1
