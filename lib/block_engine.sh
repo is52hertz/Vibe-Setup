@@ -63,15 +63,26 @@ _append_fragment() {
   printf '\n\n' >> "${dest}"
 }
 
-# Collapse runs of blank lines in a generated file down to one. Only ever used on
-# files this engine just assembled — never on a file the user may have edited.
+# Normalize the whitespace of a generated file: no leading or trailing blank
+# lines, and runs of blank lines between fragments collapsed to one. Only ever
+# used on files this engine just assembled — never on a file the user may have
+# edited. A trailing blank line here is what later makes a removed block leave a
+# double blank behind, so it matters more than it looks.
 _squeeze_blank_lines() {
   local src="$1"
   local dest="$2"
 
   awk '
-    NF { print; blank = 0; next }
-    !blank { print ""; blank = 1 }
+    NF {
+      if (started && blank) {
+        print ""
+      }
+      started = 1
+      blank = 0
+      print
+      next
+    }
+    started { blank = 1 }
   ' "${src}" > "${dest}"
 }
 
@@ -245,9 +256,11 @@ replace_block() {
   return 0
 }
 
-# Drop one block from <file>, tags included. Everything outside the block is
-# preserved byte for byte. Returns 1 when the block is not there, so callers can
-# tell "removed it" from "there was nothing to remove".
+# Drop one block from <file>, tags included, along with the single blank line
+# directly above it — the exact inverse of append_block_if_missing, so enabling
+# and then disabling a feature leaves the file byte for byte as it started.
+# Everything else keeps the spacing the user gave it. Returns 1 when the block is
+# not there, so callers can tell "removed it" from "there was nothing to remove".
 # Usage: remove_block <file> <tag_name> <id_or_empty>
 remove_block() {
   local file="$1"
@@ -258,15 +271,15 @@ remove_block() {
   [[ -f "${file}" ]] || return 1
   has_block "${file}" "${tag}" "${id}" || return 1
 
+  # One line of lookahead: a blank line is held back rather than printed, so the
+  # blank that introduced the block can be dropped once the block turns up. A run
+  # of blank lines only ever loses its last line, and only to a block.
   awk -v tag="${tag}" -v id="${id}" '
     BEGIN {
       in_block = 0
+      pending_blank = 0
       start_pat = (id != "") ? ("<" tag "[[:space:]]+id=[\x22\x27]" id "[\x22\x27]") : ("<" tag ">")
       end_pat = "</" tag ">"
-    }
-    $0 ~ start_pat {
-      in_block = 1
-      next
     }
     in_block {
       if ($0 ~ end_pat) {
@@ -274,7 +287,30 @@ remove_block() {
       }
       next
     }
-    { print }
+    $0 ~ start_pat {
+      pending_blank = 0
+      in_block = 1
+      next
+    }
+    /^[[:space:]]*$/ {
+      if (pending_blank) {
+        print ""
+      }
+      pending_blank = 1
+      next
+    }
+    {
+      if (pending_blank) {
+        print ""
+        pending_blank = 0
+      }
+      print
+    }
+    END {
+      if (pending_blank) {
+        print ""
+      }
+    }
   ' "${file}" > "${tmp}" || {
     rm -f "${tmp}"
     return 1

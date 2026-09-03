@@ -329,9 +329,19 @@ show_project_diagnostics() {
   local cc_workflow_status="Disabled"
   local agents_status="Missing"
 
-  # Git check
+  # Git check. A repository with no commits yet is the normal state right after
+  # vibe-init scaffolds one, and there `rev-parse --abbrev-ref HEAD` prints
+  # "HEAD" *and* fails; symbolic-ref answers the unborn branch name cleanly.
   if command -v git >/dev/null 2>&1 && git -C "${project_dir}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    branch="$(git -C "${project_dir}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "git")"
+    branch="$(git -C "${project_dir}" symbolic-ref --short -q HEAD 2>/dev/null || true)"
+    if [[ -z "${branch}" ]]; then
+      branch="$(git -C "${project_dir}" rev-parse --short HEAD 2>/dev/null || true)"
+      if [[ -n "${branch}" ]]; then
+        branch="detached at ${branch}"
+      else
+        branch="unknown"
+      fi
+    fi
     git_status="Initialized (${branch})"
   fi
 
