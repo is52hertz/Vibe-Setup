@@ -900,7 +900,9 @@ maybe_init_git() {
   fi
 
   info "initializing git repository in ${project_dir}"
-  run_in_dir "${project_dir}" git init
+  # -q because we have already said what is happening: git's own line would be
+  # the one thing in the run that does not hang off the gutter.
+  run_in_dir "${project_dir}" git init -q
 }
 
 # Resolve which profile the scaffolded AGENTS.md is assembled with, and echo it.
