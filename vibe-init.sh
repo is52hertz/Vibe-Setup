@@ -21,6 +21,13 @@ TEMPLATE_ROOT="${SCRIPT_DIR}/templates"
 ASSUME_DEFAULTS=0
 DRY_RUN=0
 APPLY_MODE=0
+CC_WORKFLOW_CHOICE=""
+CC_WORKFLOW_ENABLED=0
+
+# Source helper modules
+[[ -f "${SCRIPT_DIR}/lib/ui.sh" ]] && . "${SCRIPT_DIR}/lib/ui.sh"
+[[ -f "${SCRIPT_DIR}/lib/block_engine.sh" ]] && . "${SCRIPT_DIR}/lib/block_engine.sh"
+[[ -f "${SCRIPT_DIR}/lib/trellis.sh" ]] && . "${SCRIPT_DIR}/lib/trellis.sh"
 # Optional comma/space separated subset of TEMPLATE_FILES to copy in apply mode.
 # Empty means "ask interactively" (or "all" under -y / non-TTY). Requires --apply.
 APPLY_FILES=""
@@ -88,6 +95,7 @@ Options:
                            set; ask (the -y / non-TTY default) keeps all profiles for
                            the project's AI to resolve later. Not valid with --apply.
   --trellis yes|no         Whether to install/init Trellis.
+  --cc-workflow yes|no     Whether to include CC-Cowork-Workflow (default: no).
   --developer-name NAME    Developer identity passed to: trellis init -u NAME.
                            Defaults to \$DEVELOPER_NAME, then git user.name, then \$USER.
   --platforms "FLAGS"      Trellis platform flags, for example: "--claude --codex".
@@ -167,6 +175,16 @@ while [[ $# -gt 0 ]]; do
     --trellis=*)
       TRELLIS_CHOICE="${1#*=}"
       require_arg "--trellis" "${TRELLIS_CHOICE}"
+      shift
+      ;;
+    --cc-workflow)
+      require_arg "$1" "${2:-}"
+      CC_WORKFLOW_CHOICE="$2"
+      shift 2
+      ;;
+    --cc-workflow=*)
+      CC_WORKFLOW_CHOICE="${1#*=}"
+      require_arg "--cc-workflow" "${CC_WORKFLOW_CHOICE}"
       shift
       ;;
     --git)
@@ -898,9 +916,16 @@ write_project_placeholders() {
   # Keep this file list in sync with TEMPLATE_FILES (used by apply mode).
   copy_or_write_placeholder "AGENTS.md" "${project_dir}/AGENTS.md" "$(agents_placeholder)"
   copy_or_write_placeholder "CLAUDE.md" "${project_dir}/CLAUDE.md" "$(claude_placeholder)"
-  copy_optional_template "CC-Cowork-Workflow.md" "${project_dir}/CC-Cowork-Workflow.md"
+  if [[ "${CC_WORKFLOW_ENABLED}" -eq 1 ]]; then
+    copy_optional_template "CC-Cowork-Workflow.md" "${project_dir}/CC-Cowork-Workflow.md"
+  fi
   copy_or_write_placeholder ".claude/settings.json" "${project_dir}/.claude/settings.json" "$(claude_settings_placeholder)"
   copy_optional_template "Test/templates-test-checklist.html" "${project_dir}/Test/templates-test-checklist.html"
+
+  # If CC-Workflow is disabled, ensure CLAUDE.md is clean of the CC-Workflow block
+  if [[ -f "${project_dir}/CLAUDE.md" && "${CC_WORKFLOW_ENABLED}" -eq 0 && "${DRY_RUN}" -eq 0 ]]; then
+    assemble_claude_md "${project_dir}/CLAUDE.md" 0
+  fi
 }
 
 choose_project_dir() {
@@ -964,11 +989,7 @@ run_apply_mode() {
   . "${apply_lib}"
 
   info "applying template set: ${TEMPLATE_DIR}"
-  apply_templates "${target_dir}"
-
-  suggest_template_merges
-
-  hint_if_not_git_repo "${target_dir}"
+  orchestrator_dashboard "${target_dir}"
 
   info "done"
   info "target directory: ${target_dir}"
@@ -1006,6 +1027,23 @@ main() {
   if [[ "${APPLY_MODE}" -eq 1 ]]; then
     run_apply_mode
     return
+  fi
+
+  if [[ -n "${CC_WORKFLOW_CHOICE}" ]]; then
+    normalized_cc="$(normalize_yes_no "${CC_WORKFLOW_CHOICE}")" || die "--cc-workflow must be yes or no"
+    if [[ "${normalized_cc}" == "yes" ]]; then
+      CC_WORKFLOW_ENABLED=1
+    else
+      CC_WORKFLOW_ENABLED=0
+    fi
+  elif [[ "${ASSUME_DEFAULTS}" -eq 1 || ! -t 0 ]]; then
+    CC_WORKFLOW_ENABLED=0
+  else
+    if ask_yes_no "Include CC-Cowork-Workflow (Claude Code external executor co-work)?" "no"; then
+      CC_WORKFLOW_ENABLED=1
+    else
+      CC_WORKFLOW_ENABLED=0
+    fi
   fi
 
   project_dir="$(choose_project_dir)"

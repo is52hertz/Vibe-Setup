@@ -1,28 +1,26 @@
+<METADATA>
 # AI Agent Instructions
 
 This file is the single source of truth for all AI coding assistants working on this project.
 Tool-specific files (`CLAUDE.md`) point here.
 
 Keep it to durable, cross-session guidance — product, rules, standards, security, handoff. Session scratch (current branch, this round's progress, temporary state) does not belong here; put it in the End-of-Session Summary or `notice.md`.
+</METADATA>
 
-## Instruction Priority
-
-- Treat this `AGENTS.md` as the authority for product requirements, business rules, coding standards, security/correctness constraints, verification expectations, commit policy, and handoff rules.
-- Treat Trellis as the authority for task workflow mechanics: task lifecycle, phase order, PRD/research/spec-context handling, quality-gate sequence, session journal, and finish/archive steps.
-- When these instructions and Trellis overlap, apply the more specific authority: product/business/code/security rules from `AGENTS.md`; task lifecycle and phase-flow rules from Trellis.
-- Do not use Trellis text to weaken or bypass the business, security, correctness, or scope rules in this file.
-- Do not use this file as a reason to skip required Trellis steps unless the current user message explicitly opts out for that turn.
-
+<PRODUCT>
 ## Product
 
 <!-- TODO: One paragraph describing this project — what it is, who uses it, the platform/runtime target, and any defining constraints (single- vs multi-user, sandboxed or not, deployment target, scale). -->
+</PRODUCT>
 
+<PROJECT_PHASE>
 ## Project Phase
 
-<!-- TODO: A terse, kept-current snapshot of each app/package and the project specs — not a log. Update in place; don't append history. -->
+<!-- TODO: A terse, kept-current snapshot of each app/package — not a log. Update in place; don't append history. -->
 - **<app/package name>**: TODO — what's built, what's tested.
-- **Project specs (`.trellis/spec/`)**: TODO — authored, or still generic templates.
+</PROJECT_PHASE>
 
+<CORE_RULES>
 ## Development Rules
 
 ### Communication Language
@@ -88,28 +86,6 @@ Keep it to durable, cross-session guidance — product, rules, standards, securi
   ```
   Types: `feat`, `fix`, `refactor`, `chore`, `docs`, `test`, `ci`, `perf`.
 
-### Project Profile
-
-<!-- PROFILE-SETUP (one-time): this template ships multiple rule profiles below.
-     Before real work: (1) infer the project type, (2) ask the user which profile
-     fits — use the platform's structured question mechanism if available,
-     otherwise ask directly, (3) keep that PROFILE block, delete the others and
-     this setup note, then commit. Until resolved, treat all profile-gated rules
-     below as INACTIVE. -->
-
-<!-- PROFILE:service START -->
-**Profile: service / backend** — long-running services, APIs, anything with a datastore or external callers.
-- Tests are required: cover new behavior; for a bug, first add a test that reproduces it, then make it pass.
-- Validate and normalize every input crossing the trust boundary; never trust client-supplied values.
-- **Data integrity & concurrency**: TODO — transactional boundaries, how concurrent writes are serialized, and idempotency for external callbacks. Fill in for this project.
-<!-- PROFILE:service END -->
-
-<!-- PROFILE:tool START -->
-**Profile: lightweight tool / script** — one-off scripts, small CLIs, utilities.
-- Scale verification to the risk: a documented manual check or a smoke test can be enough; don't build a test harness a small tool doesn't warrant.
-- Skip layered architecture and speculative abstraction; keep it a small, readable unit.
-<!-- PROFILE:tool END -->
-
 ### Session Handoff
 - `notice.md` files are scoped by directory and record durable handoff information for the next agent.
 - At the start of a task, read the relevant `notice.md` files (the root one and those in the directories you'll work in) before making changes.
@@ -128,6 +104,33 @@ Keep it to durable, cross-session guidance — product, rules, standards, securi
   - **Open/known risks**: issues introduced or discovered this round (omit if none)
   - **Suggested next steps**: 1-3 concrete actionable items
   ```
+</CORE_RULES>
+
+<!-- PROFILE:service START -->
+<PROFILE id="service">
+**Profile: service / backend** — long-running services, APIs, anything with a datastore or external callers.
+- Tests are required: cover new behavior; for a bug, first add a test that reproduces it, then make it pass.
+- Validate and normalize every input crossing the trust boundary; never trust client-supplied values.
+- **Data integrity & concurrency**: TODO — transactional boundaries, how concurrent writes are serialized, and idempotency for external callbacks. Fill in for this project.
+</PROFILE>
+<!-- PROFILE:service END -->
+
+<!-- PROFILE:tool START -->
+<PROFILE id="tool">
+**Profile: lightweight tool / script** — one-off scripts, small CLIs, utilities.
+- Scale verification to the risk: a documented manual check or a smoke test can be enough; don't build a test harness a small tool doesn't warrant.
+- Skip layered architecture and speculative abstraction; keep it a small, readable unit.
+</PROFILE>
+<!-- PROFILE:tool END -->
+
+<INTEGRATION id="trellis">
+## Instruction Priority
+
+- Treat this `AGENTS.md` as the authority for product requirements, business rules, coding standards, security/correctness constraints, verification expectations, commit policy, and handoff rules.
+- Treat Trellis as the authority for task workflow mechanics: task lifecycle, phase order, PRD/research/spec-context handling, quality-gate sequence, session journal, and finish/archive steps.
+- When these instructions and Trellis overlap, apply the more specific authority: product/business/code/security rules from `AGENTS.md`; task lifecycle and phase-flow rules from Trellis.
+- Do not use Trellis text to weaken or bypass the business, security, correctness, or scope rules in this file.
+- Do not use this file as a reason to skip required Trellis steps unless the current user message explicitly opts out for that turn.
 
 <!-- TRELLIS:START -->
 # Trellis Instructions
@@ -148,5 +151,6 @@ If you're using Codex or another agent-capable tool, additional project-scoped h
 - `.codex/agents/` — optional custom subagents
 
 Managed by Trellis. Edits outside this block are preserved; edits inside may be overwritten by a future `trellis update`.
-
 <!-- TRELLIS:END -->
+</INTEGRATION>
+

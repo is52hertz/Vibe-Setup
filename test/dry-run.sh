@@ -65,10 +65,21 @@ has   "--help prints usage" "Usage:"
 # --- scaffold (base set, no Trellis) ---
 d="$(sandbox)"
 vi "${d}" --trellis no --git no --dry-run
-has "scaffold copies AGENTS.md"          "-> ${d}/AGENTS.md"
-has "scaffold copies CC-Cowork-Workflow" "-> ${d}/CC-Cowork-Workflow.md"
-has "scaffold copies settings.json"      "-> ${d}/.claude/settings.json"
-has "--git no skips git init"            "skip git init (per --git no)"
+has   "scaffold copies AGENTS.md"              "-> ${d}/AGENTS.md"
+hasnt "scaffold skips CC-Cowork-Workflow by default" "-> ${d}/CC-Cowork-Workflow.md"
+has   "scaffold copies settings.json"          "-> ${d}/.claude/settings.json"
+has   "--git no skips git init"                "skip git init (per --git no)"
+
+# --- scaffold with --cc-workflow yes ---
+d="$(sandbox)"
+vi "${d}" --trellis no --git no --cc-workflow yes --dry-run
+has "scaffold with --cc-workflow yes copies file" "-> ${d}/CC-Cowork-Workflow.md"
+
+# --- scaffold with invalid --cc-workflow dies ---
+vi "$(sandbox)" --trellis no --git no --cc-workflow bogus --dry-run
+rc_is "--cc-workflow bogus dies" 1
+has   "--cc-workflow bogus error message" "--cc-workflow must be yes or no"
+
 
 d="$(sandbox)"
 vi "${d}" --trellis no -y --dry-run
@@ -191,6 +202,60 @@ d="$(sandbox)"
 vi "${d}" --trellis yes -y --dry-run --developer-name Dev --platforms none
 has   "--platforms none note"          "no Trellis platform flags"
 hasnt "--platforms none passes no flag" "--claude"
+
+# --- real scaffold generation checks (non-dry-run in sandbox) ---
+d="$(sandbox)"
+(cd "${d}" && "${VI}" --trellis no --git no -y </dev/null >/dev/null 2>&1)
+if [[ -f "${d}/AGENTS.md" ]] && grep -q "<CORE_RULES>" "${d}/AGENTS.md" && grep -q "<PRODUCT>" "${d}/AGENTS.md"; then
+  ok "scaffold generates AGENTS.md with <TAG> structure"
+else
+  ko "scaffold generates AGENTS.md with <TAG> structure" "missing XML tags in AGENTS.md"
+fi
+
+if [[ ! -f "${d}/CC-Cowork-Workflow.md" ]]; then
+  ok "scaffold default omits CC-Cowork-Workflow.md file"
+else
+  ko "scaffold default omits CC-Cowork-Workflow.md file" "CC-Cowork-Workflow.md unexpectedly created"
+fi
+
+if [[ -f "${d}/CLAUDE.md" ]] && ! grep -q "CC-Cowork-Workflow.md" "${d}/CLAUDE.md"; then
+  ok "scaffold default CLAUDE.md excludes CC-workflow reference"
+else
+  ko "scaffold default CLAUDE.md excludes CC-workflow reference" "CLAUDE.md unexpectedly referenced CC-workflow"
+fi
+
+# --- real scaffold with --cc-workflow yes ---
+d="$(sandbox)"
+(cd "${d}" && "${VI}" --trellis no --git no --cc-workflow yes -y </dev/null >/dev/null 2>&1)
+if [[ -f "${d}/CC-Cowork-Workflow.md" ]]; then
+  ok "scaffold --cc-workflow yes creates workflow file"
+else
+  ko "scaffold --cc-workflow yes creates workflow file" "CC-Cowork-Workflow.md was not created"
+fi
+
+if [[ -f "${d}/CLAUDE.md" ]] && grep -q "CC-Cowork-Workflow.md" "${d}/CLAUDE.md"; then
+  ok "scaffold --cc-workflow yes CLAUDE.md includes reference"
+else
+  ko "scaffold --cc-workflow yes CLAUDE.md includes reference" "CLAUDE.md missing CC-workflow reference"
+fi
+
+# --- real scaffold with --profile service ---
+d="$(sandbox)"
+(cd "${d}" && "${VI}" --trellis no --git no --profile service -y </dev/null >/dev/null 2>&1)
+if [[ -f "${d}/AGENTS.md" ]] && grep -q "<PROFILE id=\"service\">" "${d}/AGENTS.md" && ! grep -q "<PROFILE id=\"tool\">" "${d}/AGENTS.md"; then
+  ok "scaffold --profile service keeps only service profile"
+else
+  ko "scaffold --profile service keeps only service profile" "AGENTS.md profile pruning failed"
+fi
+
+# --- apply diagnostics: detect Trellis project and version ---
+d="$(sandbox)"
+mkdir -p "${d}/.trellis"
+printf '0.6.16\n' > "${d}/.trellis/.version"
+vi "${d}" --apply -y --dry-run
+has "apply detects Trellis project version" "Project v0.6.16"
+
+
 
 echo
 if [[ "${FAIL}" -eq 0 ]]; then

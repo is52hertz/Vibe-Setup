@@ -1,40 +1,27 @@
 #!/usr/bin/env bash
-# Sourced by vibe-init.sh (not run standalone). Relies on helpers and globals
-# defined there: info, warn, die, ensure_dir, ask_yes_no, ask_value, DRY_RUN,
-# ASSUME_DEFAULTS, TEMPLATE_DIR, TEMPLATE_FILES, APPLY_FILES, ON_EXISTS.
-#
-# apply mode copies the template files into an EXISTING project. For a file that
-# already exists in the target, the user chooses per file how to resolve it:
-# overwrite it, write the template alongside as <name>.template, or skip it. The
-# default (and the -y / non-TTY behavior) is the non-destructive <name>.template;
-# --on-exists overwrite|template|skip sets it for the whole run non-interactively.
-#
-# Before copying, apply mode lists the managed files with their status (already
-# present in the target vs new) and lets the user choose all or a subset. The
-# selection can be pre-supplied non-interactively via the --files flag
-# (APPLY_FILES); under -y / non-TTY with no --files, all available files are
-# selected, preserving the original copy-everything behavior.
+# lib/apply.sh — Project Orchestrator & Template Manager for existing projects.
+# Sourced by vibe-init.sh (not run standalone).
+# Compatible with macOS Bash 3.2.
 
-# Files chosen for this apply run (relative paths). Declared so expansions are
-# safe under set -u before choose_apply_files populates it.
+# Source helper modules if not already loaded
+if ! command -v ui_box_start >/dev/null 2>&1; then
+  [[ -f "${SCRIPT_DIR}/lib/ui.sh" ]] && . "${SCRIPT_DIR}/lib/ui.sh"
+fi
+if ! command -v has_block >/dev/null 2>&1; then
+  [[ -f "${SCRIPT_DIR}/lib/block_engine.sh" ]] && . "${SCRIPT_DIR}/lib/block_engine.sh"
+fi
+if ! command -v trellis_is_installed >/dev/null 2>&1; then
+  [[ -f "${SCRIPT_DIR}/lib/trellis.sh" ]] && . "${SCRIPT_DIR}/lib/trellis.sh"
+fi
+
 APPLY_SELECTED=()
-
-# Relative paths that were written as <name>.template because the target already
-# existed and the user chose / defaulted to the non-destructive template
-# disposition. Drives the end-of-run "merge these into your real files" hint.
 APPLIED_TEMPLATES=()
-
-# How the most recent resolve_on_exists call decided to handle a pre-existing
-# file: "overwrite" | "template" | "skip".
 RESOLVED_DISPOSITION=""
 
-# Decide how to handle a pre-existing destination for one file; sets
-# RESOLVED_DISPOSITION to "overwrite" | "template" | "skip". A run-wide policy
-# (ON_EXISTS, from --on-exists) wins; otherwise -y / non-TTY default to the
-# non-destructive "template"; otherwise ask per file (default template).
 resolve_on_exists() {
   local relative_path="$1"
   local input=""
+  local default_choice="t"
 
   if [[ -n "${ON_EXISTS}" ]]; then
     RESOLVED_DISPOSITION="${ON_EXISTS}"
@@ -46,7 +33,7 @@ resolve_on_exists() {
   fi
 
   while true; do
-    input="$(ask_value "${relative_path} exists — [o]verwrite / [t]emplate / [s]kip?" "t")"
+    input="$(ask_value "${relative_path} exists — [o]verwrite / [t]emplate / [s]kip?" "${default_choice}")"
     case "${input}" in
       o|overwrite) RESOLVED_DISPOSITION="overwrite"; return ;;
       t|template)  RESOLVED_DISPOSITION="template";  return ;;
@@ -56,14 +43,6 @@ resolve_on_exists() {
   done
 }
 
-# Copy one template file into the target project. When the destination already
-# exists, `disposition` ("overwrite" | "template" | "skip") decides what happens:
-#   - source missing in the template dir -> skip (info)
-#   - destination does not exist          -> copy to destination
-#   - exists + overwrite                  -> copy over destination
-#   - exists + template                   -> copy to <destination>.template
-#                                            (skip + warn if that also exists)
-#   - exists + skip                       -> leave the existing file untouched
 copy_template_file() {
   local relative_path="$1"
   local destination="$2"
@@ -110,10 +89,6 @@ copy_template_file() {
   fi
 }
 
-# Classify a managed file relative to the target project. Echoes one of:
-#   missing-source  source absent in this template set (cannot be copied)
-#   exists          target already present (a copy would land as <rel>.template)
-#   new             target absent (a copy would create <rel>)
 apply_file_status() {
   local relative_path="$1"
   local project_dir="$2"
@@ -127,9 +102,6 @@ apply_file_status() {
   fi
 }
 
-# Resolve the --files list (APPLY_FILES, comma/space separated) into
-# APPLY_SELECTED. Dies on an unknown path; warns and skips a known path whose
-# source is absent in the chosen template set.
 select_from_files_flag() {
   local raw="${APPLY_FILES//,/ }"
   local want="" rel="" known="" known_list=""
@@ -157,21 +129,17 @@ select_from_files_flag() {
   done
 }
 
-# Let the user choose which managed files to copy; populates APPLY_SELECTED.
 choose_apply_files() {
   local project_dir="$1"
   local rel="" status="" label="" input="" token="" ok=""
   local -a available=()
   local -a tokens=()
 
-  # Non-interactive subset wins over any prompting.
   if [[ -n "${APPLY_FILES}" ]]; then
     select_from_files_flag
     return
   fi
 
-  # List every managed file with its status; only files with a present source
-  # are selectable (numbered).
   printf '[vibe-init] template files (set: %s):\n' "${TEMPLATE_DIR}" >&2
   for rel in "${TEMPLATE_FILES[@]}"; do
     status="$(apply_file_status "${rel}" "${project_dir}")"
@@ -200,7 +168,6 @@ choose_apply_files() {
     return
   fi
 
-  # Preserve the original behavior under -y / non-TTY: copy everything.
   if [[ "${ASSUME_DEFAULTS}" -eq 1 || ! -t 0 ]]; then
     APPLY_SELECTED=("${available[@]}")
     return
@@ -211,7 +178,6 @@ choose_apply_files() {
     return
   fi
 
-  # Subset selection by number.
   while true; do
     input="$(ask_value "Enter numbers to copy (e.g. 1 3), or 'all'" "all")"
     if [[ "${input}" == "all" ]]; then
@@ -219,7 +185,6 @@ choose_apply_files() {
       return
     fi
 
-    # IFS is $'\n\t' globally, so split user input on spaces explicitly.
     input="${input//,/ }"
     IFS=' ' read -r -a tokens <<< "${input}"
     if [[ "${#tokens[@]}" -eq 0 ]]; then
@@ -260,6 +225,7 @@ apply_templates() {
   for rel in "${APPLY_SELECTED[@]}"; do
     destination="${project_dir}/${rel}"
     disposition="template"
+
     if [[ -e "${destination}" ]]; then
       resolve_on_exists "${rel}"
       disposition="${RESOLVED_DISPOSITION}"
@@ -268,10 +234,6 @@ apply_templates() {
   done
 }
 
-# After apply, if any files landed as <name>.template beside an existing file,
-# print a clean, copy-pasteable prompt (no log prefix, between separators) the
-# user can hand to an AI agent: reconcile each template into the user's file,
-# preserving their customizations, and surface conflicts for the user to decide.
 suggest_template_merges() {
   local rel="" count="" noun="files were"
 
@@ -298,4 +260,214 @@ suggest_template_merges() {
     printf '%s\n' "the .template files."
     printf '%s\n' "────────────────────────────────────────────────────────"
   } >&2
+}
+
+# -----------------------------------------------------------------------------
+# Diagnostics & Dashboard
+# -----------------------------------------------------------------------------
+
+show_project_diagnostics() {
+  local project_dir="$1"
+  local git_status="Not initialized"
+  local branch=""
+  local trellis_status="Not configured"
+  local trellis_tools="None"
+  local cc_workflow_status="Disabled"
+  local agents_status="Missing"
+
+  # Git check
+  if command -v git >/dev/null 2>&1 && git -C "${project_dir}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    branch="$(git -C "${project_dir}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "git")"
+    git_status="Initialized (${branch})"
+  fi
+
+  # Trellis check
+  local p_ver c_ver
+  c_ver="$(trellis_cli_version || echo "none")"
+  if trellis_has_project "${project_dir}"; then
+    p_ver="$(trellis_project_version "${project_dir}" || echo "unknown")"
+    trellis_status="Active (Project v${p_ver} / CLI v${c_ver})"
+    trellis_tools="$(trellis_configured_platforms "${project_dir}")"
+  elif [[ "${c_ver}" != "none" ]]; then
+    trellis_status="Not initialized (CLI v${c_ver} ready)"
+  else
+    trellis_status="CLI not installed"
+  fi
+
+  # CC-Workflow check
+  if [[ -f "${project_dir}/CC-Cowork-Workflow.md" ]]; then
+    cc_workflow_status="Active"
+  fi
+
+  # AGENTS.md check
+  if [[ -f "${project_dir}/AGENTS.md" ]]; then
+    if has_block "${project_dir}/AGENTS.md" "CORE_RULES"; then
+      agents_status="Modern (<TAG> format)"
+    else
+      agents_status="Present (Legacy format)"
+    fi
+  fi
+
+  ui_box_start "Project AI Environment Status"
+  ui_box_row "Git Repo" "${git_status}"
+  ui_box_row "Trellis" "${trellis_status}"
+  ui_box_row "Trellis Tools" "${trellis_tools}"
+  ui_box_row "CC-Workflow" "${cc_workflow_status}"
+  ui_box_row "AGENTS.md" "${agents_status}"
+  ui_box_end
+}
+
+# -----------------------------------------------------------------------------
+# Feature Toggles: CC-Workflow
+# -----------------------------------------------------------------------------
+
+toggle_cc_workflow() {
+  local project_dir="$1"
+  local current_state=0
+  local choice=""
+
+  [[ -f "${project_dir}/CC-Cowork-Workflow.md" ]] && current_state=1
+
+  if [[ "${current_state}" -eq 1 ]]; then
+    ui_warn "CC-Workflow is currently ENABLED."
+    if ask_yes_no "Disable CC-Workflow and backup the workflow file?" "yes"; then
+      if [[ "${DRY_RUN}" -eq 1 ]]; then
+        ui_info "dry-run: mv ${project_dir}/CC-Cowork-Workflow.md -> ${project_dir}/CC-Cowork-Workflow.md.disabled"
+        ui_info "dry-run: remove CC-Workflow reference from ${project_dir}/CLAUDE.md"
+      else
+        mv "${project_dir}/CC-Cowork-Workflow.md" "${project_dir}/CC-Cowork-Workflow.md.disabled"
+        if [[ -f "${project_dir}/CLAUDE.md" ]]; then
+          remove_block "${project_dir}/CLAUDE.md" "FEATURE" "cc-workflow"
+        fi
+        ui_ok "CC-Workflow disabled. File backed up to CC-Cowork-Workflow.md.disabled"
+      fi
+    fi
+  else
+    ui_info "CC-Workflow is currently DISABLED."
+    if ask_yes_no "Enable CC-Workflow and inject into CLAUDE.md?" "yes"; then
+      if [[ "${DRY_RUN}" -eq 1 ]]; then
+        ui_info "dry-run: copy CC-Cowork-Workflow.md into project"
+        ui_info "dry-run: inject CC-Workflow block into CLAUDE.md"
+      else
+        cp "${TEMPLATE_ROOT}/CC-Cowork-Workflow.md" "${project_dir}/CC-Cowork-Workflow.md"
+        if [[ -f "${project_dir}/CLAUDE.md" ]]; then
+          append_block_if_missing "${project_dir}/CLAUDE.md" "FEATURE" "cc-workflow" "${TEMPLATE_ROOT}/blocks/features/cc-workflow.md"
+        else
+          assemble_claude_md "${project_dir}/CLAUDE.md" 1
+        fi
+        ui_ok "CC-Workflow enabled and linked."
+      fi
+    fi
+  fi
+}
+
+# -----------------------------------------------------------------------------
+# Trellis Operations Menu
+# -----------------------------------------------------------------------------
+
+manage_trellis() {
+  local project_dir="$1"
+  local choice=""
+
+  if ! trellis_has_project "${project_dir}"; then
+    ui_warn "Trellis is not initialized in this project."
+    if ask_yes_no "Initialize Trellis now?" "yes"; then
+      install_and_init_trellis "${project_dir}"
+    fi
+    return
+  fi
+
+  while true; do
+    printf '\n%s--- Trellis Management ---%s\n' "${UI_BOLD}" "${UI_RESET}" >&2
+    printf '  [1] Add AI platform(s) (e.g. --codex, --cursor)\n' >&2
+    printf '  [2] Update project configuration (trellis update)\n' >&2
+    printf '  [3] Upgrade global Trellis CLI\n' >&2
+    printf '  [0] Return to main menu\n' >&2
+
+    choice="$(ask_value "Select an option" "0")"
+    case "${choice}" in
+      1)
+        local plat
+        plat="$(ask_value "Enter platform flag (e.g. --cursor, --codex)" "--cursor")"
+        if [[ -n "${plat}" ]]; then
+          trellis_add_platform "${project_dir}" "${plat}"
+        fi
+        ;;
+      2)
+        trellis_update_project "${project_dir}"
+        ;;
+      3)
+        trellis_upgrade_cli
+        ;;
+      0|q|quit)
+        break
+        ;;
+      *)
+        ui_warn "Invalid selection."
+        ;;
+    esac
+  done
+}
+
+# -----------------------------------------------------------------------------
+# Interactive Dashboard Main Hub
+# -----------------------------------------------------------------------------
+
+orchestrator_dashboard() {
+  local project_dir="$1"
+  local choice=""
+
+  show_project_diagnostics "${project_dir}"
+
+  # In non-interactive mode or if specific flags were given, fall back to safe standard apply
+  if [[ "${ASSUME_DEFAULTS}" -eq 1 || ! -t 0 || -n "${APPLY_FILES}" || -n "${ON_EXISTS}" ]]; then
+    apply_templates "${project_dir}"
+    suggest_template_merges
+    hint_if_not_git_repo "${project_dir}"
+    return
+  fi
+
+  while true; do
+    ui_banner "Project Orchestrator Dashboard"
+    show_project_diagnostics "${project_dir}"
+
+    printf '\n%sActions:%s\n' "${UI_BOLD}" "${UI_RESET}" >&2
+    printf '  [1] 📋 Sync / Apply Template Files (AGENTS.md, CLAUDE.md, etc.)\n' >&2
+    printf '  [2] 🌿 Trellis Management (Platforms, Updates, Upgrade)\n' >&2
+    printf '  [3] ⚙️  Toggle CC-Workflow Feature\n' >&2
+    printf '  [4] 🚀 Safe Sync All (Templates + Checks)\n' >&2
+    printf '  [0] Exit\n\n' >&2
+
+    choice="$(ask_value "Select action" "1")"
+    case "${choice}" in
+      1)
+        apply_templates "${project_dir}"
+        suggest_template_merges
+        ;;
+      2)
+        manage_trellis "${project_dir}"
+        ;;
+      3)
+        toggle_cc_workflow "${project_dir}"
+        ;;
+      4)
+        apply_templates "${project_dir}"
+        suggest_template_merges
+        if trellis_has_project "${project_dir}"; then
+          trellis_update_project "${project_dir}"
+        fi
+        ui_ok "All sync tasks finished."
+        break
+        ;;
+      0|q|exit)
+        ui_info "Exiting."
+        break
+        ;;
+      *)
+        ui_warn "Invalid choice."
+        ;;
+    esac
+  done
+
+  hint_if_not_git_repo "${project_dir}"
 }

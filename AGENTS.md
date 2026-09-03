@@ -12,9 +12,10 @@ Vibe-Setup is a project-bootstrapping tool for AI-assisted development. Its cent
 ## Project Phase
 
 <!-- A terse, kept-current snapshot of each app/package — not a log. Update in place; don't append history. -->
-- **vibe-init.sh**: Built — scaffold mode (empty dir or named subfolder), optional `git init` (`--git yes|no`, default yes), `--apply` mode for existing projects (interactive file selection, `--files` to preselect a subset, hints when the target is not a git repo but never runs `git init`), optional Trellis install/init, secret-deny merge into Trellis-generated settings, `$DEVELOPER_NAME` support, `--dry-run`, `-y`. Covered by a minimal dry-run assertion suite at `test/dry-run.sh`; deeper manual checks use gitignored scaffolding dirs (`[0-9]/`).
-- **lib/apply.sh**: Built — sourced by the entrypoint; lists the managed files with their status and lets the user copy all or a chosen subset into an existing project. For a file that already exists, the user chooses per file how to resolve it — overwrite / write `<name>.template` / skip (default `<name>.template`, also the `-y`/non-TTY behavior; `--on-exists overwrite|template|skip` sets it for the whole run).
-- **templates/ (base, trellis)**: Authored and kept current — `AGENTS.md`, `CLAUDE.md`, `CC-Cowork-Workflow.md` (Claude Code external-executor co-work guide), `.claude/settings.json`, and the manual test-checklist HTML.
+- **vibe-init.sh**: Built — scaffold mode (empty dir or named subfolder), optional `git init` (`--git yes|no`, default yes), `--cc-workflow yes|no` (default no), optional Trellis install/init, `$DEVELOPER_NAME` support, `--dry-run`, `-y`. Covered by an assertion suite at `test/dry-run.sh` (63 assertions).
+- **lib/apply.sh**: Built — Project Orchestrator Dashboard; performs non-destructive environment diagnostics (Git, Trellis, platforms, CC-workflow, AGENTS.md status), handles block-level template updates, Trellis lifecycle management (platform addition, config updates, CLI upgrade), and CC-Workflow feature toggling.
+- **lib/ui.sh, lib/block_engine.sh, lib/trellis.sh**: Built — modular helper libraries for terminal UI/dashboard box rendering, atomic block assembly and precision replacement (`<TAG>`-based), and Trellis platform/version perception and operations.
+- **templates/ (blocks, common)**: Authored and kept current — modular block library under `templates/blocks/` (`<METADATA>`, `<PRODUCT>`, `<PROJECT_PHASE>`, `<CORE_RULES>`, `profiles/`, `integrations/`, `features/`), base `CLAUDE.md` and `CC-Cowork-Workflow.md`, and common settings/checklist.
 
 ## Development Rules
 
