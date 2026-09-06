@@ -160,6 +160,44 @@ has "apply prompt explains direction"  "NEW template version"
 has "apply prompt flags conflicts"     "ask me to"
 has "apply prompt sets Chinese for user questions" "Simplified Chinese (中文)"
 has "apply prompt lists the pair"      "AGENTS.md.template  ->  AGENTS.md"
+# --- apply: legacy target gets the format-conversion prompt -----------------
+# A pre-block AGENTS.md (plain Markdown, no <TAG> markers) still becomes a
+# .template pair, but the end-of-run prompt must ask for a format conversion,
+# not the ordinary content merge — and name the tags of the new layout.
+d="$(sandbox)"
+printf '# AI Agent Instructions\n\n## Product\n\nmy product text\n\n### Project Profile\n\n<!-- PROFILE:service START -->\nservice rules\n<!-- PROFILE:service END -->\n' > "${d}/AGENTS.md"
+vi "${d}" --apply -y --dry-run --files AGENTS.md
+has   "legacy target writes .template"          "-> ${d}/AGENTS.md.template"
+has   "diagnostics flag the legacy format"      "Legacy (pre-<TAG> format)"
+has   "diagnostics suggest the upgrade path"    "Format upgrade"
+has   "conversion prompt announces itself"      "old pre-<TAG> format"
+has   "conversion prompt asks to restructure"   "Restructure my files into the new <TAG> block format"
+has   "conversion prompt names the tag vocabulary" "new-format tags in that .template: <CORE_RULES>"
+has   "conversion prompt names the target tags" "<METADATA>"
+has   "conversion prompt covers the anchors"    "PROFILE:service START"
+has   "conversion prompt keeps my content"      "do not rewrite, shorten"
+hasnt "legacy pair absent from merge prompt"    "Bring my files up to date"
+
+# --- apply: modern target keeps the ordinary merge prompt -------------------
+d="$(sandbox)"
+printf '# mine\n\n<CORE_RULES>\nold rules\n</CORE_RULES>\n' > "${d}/AGENTS.md"
+vi "${d}" --apply -y --dry-run --files AGENTS.md
+has   "modern target writes .template"        "-> ${d}/AGENTS.md.template"
+has   "diagnostics see the modern format"     "Modern (<TAG> format)"
+hasnt "modern target gets no upgrade hint"    "Format upgrade"
+has   "modern target gets the merge prompt"   "Bring my files up to date"
+hasnt "modern target gets no conversion prompt" "Restructure my files into the new"
+
+# --- apply: mixed pair splits the two prompts -------------------------------
+d="$(sandbox)"
+printf '# legacy agents\n' > "${d}/AGENTS.md"
+printf '<CLAUDE_BASE>\nmy claude file\n</CLAUDE_BASE>\n' > "${d}/CLAUDE.md"
+vi "${d}" --apply -y --dry-run
+prompts="$(printf '%s' "${OUT}" | grep -cF 'suggested prompt for your AI agent' || true)"
+is    "mixed run prints both prompt blocks"     "${prompts}" "2"
+has   "mixed run still merges the modern file"  "CLAUDE.md.template  ->  CLAUDE.md"
+has   "mixed run converts the legacy file"      "AGENTS.md.template  ->  AGENTS.md"
+
 
 # --- apply with no pre-existing files: no merge suggestion ---
 d="$(sandbox)"

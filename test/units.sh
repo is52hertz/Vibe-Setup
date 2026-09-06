@@ -101,6 +101,19 @@ if has_block "${WORK}/agents-tool.md" "CORE_RULES"; then ok "has_block finds a p
 if has_block "${WORK}/agents-tool.md" "PROFILE" "tool"; then ok "has_block finds a tag by id"; else ko "has_block finds a tag by id" "not found"; fi
 if has_block "${WORK}/agents-tool.md" "PROFILE" "service"; then ko "has_block rejects a wrong id" "matched"; else ok "has_block rejects a wrong id"; fi
 
+# --- file_format ------------------------------------------------------------
+# Three states: the tag present (modern), the file there without it (legacy —
+# the pre-block scaffolds this repo used to ship), and no file at all.
+is "file_format: modern file reports modern" \
+  "$(file_format "${WORK}/agents-tool.md" "CORE_RULES")" "modern"
+printf 'plain markdown\nno tags anywhere\n' > "${WORK}/legacy-agents.md"
+is "file_format: tag-less file reports legacy" \
+  "$(file_format "${WORK}/legacy-agents.md" "CORE_RULES")" "legacy"
+is "file_format: missing file reports missing" \
+  "$(file_format "${WORK}/does-not-exist.md" "CORE_RULES")" "missing"
+is "file_format: id-tagged file counts as modern" \
+  "$(file_format "${WORK}/agents-tool.md" "PROFILE" "tool")" "modern"
+
 # --- append / remove round trip -------------------------------------------
 # Enabling and then disabling a feature has to leave the file exactly as it was,
 # which is the whole promise of editing by block rather than by rewrite.

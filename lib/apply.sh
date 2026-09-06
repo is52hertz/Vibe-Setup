@@ -42,6 +42,13 @@ APPLY_SELECTED=()
 # disposition. Drives the end-of-run "merge these into your real files" hint.
 APPLIED_TEMPLATES=()
 
+# The subset of APPLIED_TEMPLATES whose existing target is a pre-block file
+# (plain Markdown, no <TAG> markers). The pair is still a content merge, but
+# structurally it is a format conversion, so those pairs get their own
+# end-of-run prompt. Only files the block engine edits can be legacy.
+APPLIED_LEGACY=()
+
+
 # How the most recent resolve_on_exists call decided to handle a pre-existing
 # file: "overwrite" | "template" | "skip".
 RESOLVED_DISPOSITION=""
@@ -73,6 +80,44 @@ resolve_on_exists() {
       *) warn "please answer o, t, or s" ;;
     esac
   done
+}
+
+# The <TAG> whose presence marks a managed file as modern format; empty for
+# files the block engine does not edit (a copied file has no format to
+# convert). One line per entry so the mapping stays next to TEMPLATE_FILES.
+# Usage: modern_marker_tag <relative_path>
+modern_marker_tag() {
+  case "$1" in
+    AGENTS.md) printf 'CORE_RULES\n' ;;
+    CLAUDE.md) printf 'CLAUDE_BASE\n' ;;
+    *)         printf '\n' ;;
+  esac
+}
+
+# The opening tags of an assembled template file, e.g. "<CORE_RULES> <METADATA>
+# <PROFILE>", read out of the materialized set so the conversion prompt never
+# hard-codes a second copy of the vocabulary. Echoes nothing for a missing
+# file; a file without tags echoes an empty string. grep exits 1 on no match,
+# and the || true keeps that from tripping set -e under pipefail.
+# Usage: md_tag_vocabulary <file>
+md_tag_vocabulary() {
+  local file="$1"
+  local tags=""
+
+  [[ -f "${file}" ]] || return 0
+  tags="$(grep -oE '<[A-Z_]+( id="[^"]*")?>' "${file}" 2>/dev/null \
+    | sed -E 's/ id="[^"]*"//' | sort -u | tr '\n' ' ')" || true
+  printf '%s\n' "${tags% }"
+}
+
+# True when <rel> was written beside a legacy target this run.
+# Usage: rel_is_legacy <relative_path>
+rel_is_legacy() {
+  local rel="$1" item=""
+  for item in "${APPLIED_LEGACY[@]+${APPLIED_LEGACY[@]}}"; do
+    [[ "${item}" == "${rel}" ]] && return 0
+  done
+  return 1
 }
 
 # Copy one template file into the target project. When the destination already
@@ -126,6 +171,14 @@ copy_template_file() {
 
   if [[ "${is_template}" -eq 1 ]]; then
     APPLIED_TEMPLATES+=("${relative_path}")
+    # A target without the marker tag predates the block engine: the pair is a
+    # format conversion, not just a content merge, and gets its own prompt.
+    local marker=""
+    marker="$(modern_marker_tag "${relative_path}")"
+    if [[ -n "${marker}" ]] \
+        && [[ "$(file_format "${destination}" "${marker}")" == "legacy" ]]; then
+      APPLIED_LEGACY+=("${relative_path}")
+    fi
   fi
 }
 
@@ -314,32 +367,75 @@ apply_templates() {
 
 # When files were written as <name>.template, print a ready-to-paste prompt that
 # asks the user's own AI agent to merge each template into the real file.
+# Pairs whose existing target is a pre-block legacy file instead get the format
+# conversion prompt: the agent restructures the old file into the <TAG> layout
+# of the new template, keeping every line of the user's content.
 suggest_template_merges() {
   local rel="" count="" noun="files were"
+  local legacy_count=0 modern_count=0
 
   count="${#APPLIED_TEMPLATES[@]}"
   [[ "${count}" -gt 0 ]] || return 0
   [[ "${count}" -eq 1 ]] && noun="file was"
 
-  info "${count} ${noun} written as <name>.template beside an existing file."
-  info "copy the prompt between the lines below and give it to your AI agent:"
+  legacy_count="${#APPLIED_LEGACY[@]}"
+  modern_count=$(( count - legacy_count ))
 
-  {
-    printf '%s\n' "────────── suggested prompt for your AI agent ──────────"
-    printf '%s\n' "Bring my files up to date with vibe-init's latest templates. For each pair,"
-    printf '%s\n' "the .template is the NEW template version and the plain file is MY current"
-    printf '%s\n' "one (which may hold my customizations):"
-    for rel in "${APPLIED_TEMPLATES[@]}"; do
-      printf '  - %s.template  ->  %s\n' "${rel}" "${rel}"
-    done
-    printf '%s\n' "Merge the template into my file: keep my customizations, fold in new/changed"
-    printf '%s\n' "guidance, and respect each file's format (e.g. JSON for settings). Where they"
-    printf '%s\n' "genuinely conflict, do not choose silently — list each conflict and ask me to"
-    printf '%s\n' "decide. When you ask me anything, write it in Simplified Chinese (中文); keep"
-    printf '%s\n' "code, identifiers, and your own reasoning in English. After I confirm, delete"
-    printf '%s\n' "the .template files."
-    printf '%s\n' "────────────────────────────────────────────────────────"
-  } >&2
+  info "${count} ${noun} written as <name>.template beside an existing file."
+
+  if [[ "${modern_count}" -gt 0 ]]; then
+    info "copy the prompt between the lines below and give it to your AI agent:"
+    {
+      printf '%s\n' "────────── suggested prompt for your AI agent ──────────"
+      printf '%s\n' "Bring my files up to date with vibe-init's latest templates. For each pair,"
+      printf '%s\n' "the .template is the NEW template version and the plain file is MY current"
+      printf '%s\n' "one (which may hold my customizations):"
+      for rel in "${APPLIED_TEMPLATES[@]}"; do
+        if ! rel_is_legacy "${rel}"; then
+          printf '  - %s.template  ->  %s\n' "${rel}" "${rel}"
+        fi
+      done
+      printf '%s\n' "Merge the template into my file: keep my customizations, fold in new/changed"
+      printf '%s\n' "guidance, and respect each file's format (e.g. JSON for settings). Where they"
+      printf '%s\n' "genuinely conflict, do not choose silently — list each conflict and ask me to"
+      printf '%s\n' "decide. When you ask me anything, write it in Simplified Chinese (中文); keep"
+      printf '%s\n' "code, identifiers, and your own reasoning in English. After I confirm, delete"
+      printf '%s\n' "the .template files."
+      printf '%s\n' "────────────────────────────────────────────────────────"
+    } >&2
+  fi
+
+  if [[ "${legacy_count}" -gt 0 ]]; then
+    if [[ "${legacy_count}" -eq 1 ]]; then
+      info "1 of them is in the old pre-<TAG> format; copy the prompt between the"
+      info "lines below to convert it:"
+    else
+      info "${legacy_count} of them are in the old pre-<TAG> format; copy the prompt"
+      info "between the lines below to convert them:"
+    fi
+    {
+      printf '%s\n' "────────── suggested prompt for your AI agent ──────────"
+      printf '%s\n' "Restructure my files into the new <TAG> block format. For each pair, the"
+      printf '%s\n' ".template is the NEW template version and the plain file is MY current"
+      printf '%s\n' "one, written before the <TAG> markers existed:"
+      for rel in "${APPLIED_LEGACY[@]}"; do
+        printf '  - %s.template  ->  %s\n' "${rel}" "${rel}"
+        printf '    new-format tags in that .template: %s\n' \
+          "$(md_tag_vocabulary "${TEMPLATE_DIR}/${rel}")"
+      done
+      printf '%s\n' "Wrap each of my sections in the matching <TAG>...</TAG> pair from its"
+      printf '%s\n' ".template, keeping the block order of the .template. The old comment anchors"
+      printf '%s\n' "(e.g. <!-- PROFILE:service START/END -->, <!-- TRELLIS:START/END -->) are"
+      printf '%s\n' "format residue: once a tag wraps the same content, drop the anchor. Keep"
+      printf '%s\n' "every line of my content — do not rewrite, shorten, or \"improve\" anything,"
+      printf '%s\n' "and sections with no matching tag stay outside the blocks. Where you cannot"
+      printf '%s\n' "tell where a section belongs, do not guess — list it and ask me to decide."
+      printf '%s\n' "When you ask me anything, write it in Simplified Chinese (中文); keep code,"
+      printf '%s\n' "identifiers, and your own reasoning in English. After I confirm, delete the"
+      printf '%s\n' ".template files."
+      printf '%s\n' "────────────────────────────────────────────────────────"
+    } >&2
+  fi
 }
 
 # -----------------------------------------------------------------------------
@@ -389,14 +485,13 @@ show_project_diagnostics() {
     cc_workflow_status="Active"
   fi
 
-  # AGENTS.md check
-  if [[ -f "${project_dir}/AGENTS.md" ]]; then
-    if has_block "${project_dir}/AGENTS.md" "CORE_RULES"; then
-      agents_status="Modern (<TAG> format)"
-    else
-      agents_status="Present (Legacy format)"
-    fi
-  fi
+  # AGENTS.md check. A legacy file has no <TAG> blocks for the engine to edit;
+  # the conversion path is the ordinary sync (it writes AGENTS.md.template)
+  # plus the end-of-run prompt for the project's AI agent.
+  case "$(file_format "${project_dir}/AGENTS.md" "CORE_RULES")" in
+    modern) agents_status="Modern (<TAG> format)" ;;
+    legacy) agents_status="Legacy (pre-<TAG> format)" ;;
+  esac
 
   ui_section "Project environment"
   ui_kv "Git repo"      "${git_status}"
@@ -404,6 +499,9 @@ show_project_diagnostics() {
   ui_kv "Platforms"     "${trellis_tools}"
   ui_kv "CC-Workflow"   "${cc_workflow_status}"
   ui_kv "AGENTS.md"     "${agents_status}"
+  if [[ "${agents_status}" == "Legacy"* ]]; then
+    ui_kv "Format upgrade" "sync once, then follow the printed agent prompt"
+  fi
 }
 
 # -----------------------------------------------------------------------------

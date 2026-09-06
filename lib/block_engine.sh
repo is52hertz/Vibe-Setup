@@ -53,6 +53,25 @@ has_block() {
   fi
 }
 
+# Classify a file's format: "modern" when it carries the opening tag the block
+# engine edits, "legacy" when the file exists but has none (a pre-block
+# scaffold, or any file from before the tag markers existed), "missing" when
+# there is no file. Callers pass the tag whose presence proves modernity
+# (CORE_RULES for AGENTS.md, CLAUDE_BASE for CLAUDE.md).
+# Usage: file_format <file> <tag_name> [id]
+file_format() {
+  local file="$1"
+  local tag="$2"
+  local id="${3:-}"
+
+  [[ -f "${file}" ]] || { printf 'missing\n'; return 0; }
+  if has_block "${file}" "${tag}" "${id}"; then
+    printf 'modern\n'
+  else
+    printf 'legacy\n'
+  fi
+}
+
 # Append one file to another with exactly one blank line between them.
 _append_fragment() {
   local src="$1"
