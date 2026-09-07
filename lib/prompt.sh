@@ -66,15 +66,32 @@ _prompt_split() {
   fi
 }
 
-# Draw the hint column for the option just split. A hint with a state level is
-# drawn in that level's color; without one it stays dim, which is what every
-# record that predates the level looked like.
+# Draw the hint column for the option just split.
+#
+# A hint may open with a state token in parentheses — "(on) in AGENTS.md". That
+# token is the state and takes the level's color, the rest is context and stays
+# dim: the same split ui_kv_state makes in a status row, so a toggle's current
+# state is visible in the menu itself rather than only in the card above it.
+# That is what stops a mis-keyed Enter from flipping something the user meant to
+# leave alone. A hint with a level but no token takes the color whole; a hint
+# with no level at all stays dim, as every record predating the level looked.
 _prompt_draw_hint() {
-  if [[ -n "${PROMPT_HINT_LEVEL}" ]]; then
-    printf '   %s%s%s' "$(_ui_state_color "${PROMPT_HINT_LEVEL}")" "${PROMPT_HINT}" "${UI_RESET}" >&2
-  else
+  local color="" token="" rest=""
+
+  if [[ -z "${PROMPT_HINT_LEVEL}" ]]; then
     printf '   %s%s%s' "${UI_DIM}" "${PROMPT_HINT}" "${UI_RESET}" >&2
+    return
   fi
+
+  color="$(_ui_state_color "${PROMPT_HINT_LEVEL}")"
+  if [[ "${PROMPT_HINT}" == "("*") "* ]]; then
+    token="${PROMPT_HINT%%) *})"
+    rest="${PROMPT_HINT#*) }"
+    printf '   %s%s%s %s%s%s' \
+      "${color}" "${token}" "${UI_RESET}" "${UI_DIM}" "${rest}" "${UI_RESET}" >&2
+    return
+  fi
+  printf '   %s%s%s' "${color}" "${PROMPT_HINT}" "${UI_RESET}" >&2
 }
 
 # Is there a terminal on stdin to read an answer from?

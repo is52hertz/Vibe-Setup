@@ -859,12 +859,57 @@ toggle_trellis_integration() {
 # Interactive Dashboard Main Hub
 # -----------------------------------------------------------------------------
 
+# The dashboard's menu, in order, one prompt_opt record per line. Split out of
+# orchestrator_dashboard so the ordering rule can be tested: the loop around it
+# needs a terminal, this does not.
+#
+# The menu leads with whatever actually has work. On a project already in sync,
+# "Sync template files" can only repeat what the diagnostics card just said, so
+# it drops below the entries that can still change something instead of sitting
+# on the default and spending the first row on nothing. It is demoted rather
+# than removed — the plan can be wrong about a template edited by hand, and
+# hiding the way to re-check would be worse than one extra row.
+#
+# Each toggle carries its own state as a "(on)"/"(off)" token, which the
+# selector draws in the level's color. A toggle is the one kind of entry where
+# a mis-keyed Enter changes something, so its current state belongs in the menu
+# rather than only in the card above it.
+#
+# Usage: dashboard_actions <project_dir> <sync_hint> <sync_level>
+dashboard_actions() {
+  local project_dir="$1"
+  local sync_state="${2:-}"
+  local sync_level="${3:-}"
+  local cc_state="(off) CC-Cowork-Workflow.md" cc_level="off"
+  local integ_state="(off) in AGENTS.md"       integ_level="off"
+
+  if [[ -f "${project_dir}/CC-Cowork-Workflow.md" ]]; then
+    cc_state="(on) CC-Cowork-Workflow.md"
+    cc_level="ok"
+  fi
+  if has_block "${project_dir}/AGENTS.md" "INTEGRATION" "trellis"; then
+    integ_state="(on) in AGENTS.md"
+    integ_level="ok"
+  fi
+
+  if sync_has_work; then
+    prompt_opt sync "Sync template files" "${sync_state}" "${sync_level}"; printf '\n'
+  fi
+  prompt_opt trellis "Trellis management"   "platforms, update, upgrade"; printf '\n'
+  prompt_opt ccflow  "Toggle CC-Workflow"   "${cc_state}"    "${cc_level}"; printf '\n'
+  prompt_opt integ   "Toggle Trellis block" "${integ_state}" "${integ_level}"; printf '\n'
+  if ! sync_has_work; then
+    prompt_opt sync "Sync template files" "${sync_state}" "${sync_level}"; printf '\n'
+  fi
+  prompt_opt syncall "Sync everything and exit" "templates + Trellis update"; printf '\n'
+  prompt_opt quit    "Exit"; printf '\n'
+}
+
 orchestrator_dashboard() {
   local project_dir="$1"
   local choice=""
-  local cc_state=""
-  local sync_state=""
-  local sync_level=""
+  local record=""
+  local sync_state="" sync_level=""
   local -a actions=()
 
   # Non-interactive (-y, no TTY) or driven by an explicit --files / --on-exists
@@ -882,12 +927,6 @@ orchestrator_dashboard() {
   # Interactive loop. The diagnostics are rendered here and nowhere else: an
   # extra call outside the loop is what used to print the whole card twice.
   while true; do
-    if [[ -f "${project_dir}/CC-Cowork-Workflow.md" ]]; then
-      cc_state="currently on"
-    else
-      cc_state="currently off"
-    fi
-
     show_project_diagnostics "${project_dir}"
 
     # Plan the sync before drawing the menu, so the entry says what there is to
@@ -901,17 +940,15 @@ orchestrator_dashboard() {
       sync_level="$(sync_summary_level)"
     fi
 
-    # Built up in an array rather than nested inline: bash 3.2 mis-parses a
-    # command substitution that closes immediately inside another one.
     actions=()
-    actions+=("$(prompt_opt sync    "Sync template files"      "${sync_state}" "${sync_level}")")
-    actions+=("$(prompt_opt trellis "Trellis management"       "platforms, update, upgrade")")
-    actions+=("$(prompt_opt ccflow  "Toggle CC-Workflow"       "${cc_state}")")
-    actions+=("$(prompt_opt integ   "Toggle Trellis block"     "in AGENTS.md")")
-    actions+=("$(prompt_opt syncall "Sync everything and exit" "templates + Trellis update")")
-    actions+=("$(prompt_opt quit    "Exit")")
+    while IFS= read -r record; do
+      [[ -n "${record}" ]] && actions+=("${record}")
+    done < <(dashboard_actions "${project_dir}" "${sync_state}" "${sync_level}")
 
-    choice="$(ui_select "What would you like to do?" "sync" "${actions[@]}")"
+    # The selector starts on the first entry, because dashboard_actions already
+    # put the most useful one there.
+    _prompt_split "${actions[0]}"
+    choice="$(ui_select "What would you like to do?" "${PROMPT_VALUE}" "${actions[@]}")"
     case "${choice}" in
       sync)
         info "applying template set: ${TEMPLATE_SET_LABEL}"

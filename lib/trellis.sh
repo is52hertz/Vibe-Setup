@@ -90,12 +90,29 @@ trellis_add_platform() {
   run_in_dir "${project_dir}" trellis init "${platform_flag}"
 }
 
+# Run `trellis update` against the project.
+#
+# `trellis update` is not a no-op when there is nothing to update: it rescans
+# every managed file, prints the whole inventory, and stops to ask about each
+# file the user has edited. On a project already at the CLI's version that is a
+# long interrogation for no gain, and "Sync everything and exit" used to walk
+# into it every single time. So when the two versions match, say so and ask
+# first — the answer defaults to no, and a scripted run therefore skips it.
 trellis_update_project() {
   local project_dir="$1"
+  local project_version="" cli_version=""
 
   if ! trellis_is_installed; then
     ui_error "Trellis CLI is not installed."
     return 1
+  fi
+
+  project_version="$(trellis_project_version "${project_dir}" 2>/dev/null || true)"
+  cli_version="$(trellis_cli_version || true)"
+  if [[ -n "${project_version}" && "${project_version}" == "${cli_version}" ]]; then
+    ui_info "Trellis is already at v${project_version}; an update would only re-scan"
+    ui_info "and ask about the files you have edited."
+    ask_yes_no "Run 'trellis update' anyway?" "no" || return 0
   fi
 
   ui_info "Updating Trellis configuration in ${project_dir}..."

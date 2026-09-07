@@ -49,6 +49,14 @@ VIBE_INIT_VERSION="test"
 . "${REPO_ROOT}/lib/state.sh"
 # shellcheck source=../lib/sync.sh
 . "${REPO_ROOT}/lib/sync.sh"
+APPLY_FILES=""
+ON_EXISTS=""
+TEMPLATE_DIR="${WORK}/tset"
+# lib/apply.sh is nothing but function definitions and a few array inits, so it
+# sources cleanly outside a real run — which is what lets the dashboard's menu
+# ordering be tested without a terminal.
+# shellcheck source=../lib/apply.sh
+. "${REPO_ROOT}/lib/apply.sh"
 
 echo "vibe-init unit tests"
 
@@ -349,6 +357,98 @@ is "an up-to-date file reads off" "$(sync_state_level same)" "off"
 
 is "one block is singular" "$(_sync_blocks_noun 1)" "block"
 is "two blocks are plural" "$(_sync_blocks_noun 2)" "blocks"
+
+# --- trellis update asks first when there is nothing to update --------------
+# `trellis update` is not a no-op on a project already at the CLI's version: it
+# rescans everything and stops to ask about each file the user has edited, which
+# "Sync everything and exit" used to walk into on every single run.
+FAKE_TRELLIS="${WORK}/fakebin"
+mkdir -p "${FAKE_TRELLIS}"
+printf '#!/usr/bin/env bash\n[[ "$1" == "--version" ]] && { echo "0.6.16"; exit 0; }\necho "RAN trellis $*"\n' \
+  > "${FAKE_TRELLIS}/trellis"
+chmod +x "${FAKE_TRELLIS}/trellis"
+mkdir -p "${WORK}/trproj/.trellis"
+
+trellis_update_run() {
+  PATH="${FAKE_TRELLIS}:${PATH}" bash -c '
+    set -uo pipefail
+    . "'"${REPO_ROOT}"'/lib/ui.sh"
+    . "'"${REPO_ROOT}"'/lib/trellis.sh"
+    DRY_RUN=0
+    run_in_dir() { local d="$1"; shift; (cd "${d}" && "$@"); }
+    ask_yes_no() { printf "ASKED\n" >&2; [[ "'"$2"'" == yes ]]; }
+    trellis_update_project "'"$1"'"
+  ' 2>&1
+}
+
+printf '0.6.16\n' > "${WORK}/trproj/.trellis/.version"
+out="$(trellis_update_run "${WORK}/trproj" no)"
+has   "a matching version asks before updating" "${out}" "ASKED"
+has   "and says why it is asking"               "${out}" "already at v0.6.16"
+hasnt "and declining runs nothing"              "${out}" "RAN trellis update"
+
+out="$(trellis_update_run "${WORK}/trproj" yes)"
+has "accepting still runs the update" "${out}" "RAN trellis update"
+
+printf '0.5.0\n' > "${WORK}/trproj/.trellis/.version"
+out="$(trellis_update_run "${WORK}/trproj" no)"
+hasnt "a version behind the CLI does not ask" "${out}" "ASKED"
+has   "a version behind the CLI just updates" "${out}" "RAN trellis update"
+
+# --- a hint's state token is highlighted, the rest is context ---------------
+# A toggle is the one entry where a mis-keyed Enter changes something, so its
+# state has to be visible in the menu, not only in the card above it.
+hint_row="$(bash -c '
+  set -euo pipefail
+  . "'"${REPO_ROOT}"'/lib/ui.sh"
+  . "'"${REPO_ROOT}"'/lib/prompt.sh"
+  UI_RICH=1; UI_DIM="<d>"; UI_RESET="<r>"; UI_GREEN="<g>"; UI_CYAN="<c>"
+  UI_G_BAR="|"; UI_S_ON="*"; UI_S_OFF="o"
+  _prompt_draw_options 0 "$(prompt_opt integ "Toggle Trellis block" "(on) in AGENTS.md" ok)"
+' 2>&1)"
+has "the state token takes the level color" "${hint_row}" "<g>(on)<r>"
+has "the rest of the hint stays dim"        "${hint_row}" "<d>in AGENTS.md<r>"
+
+no_token="$(bash -c '
+  set -euo pipefail
+  . "'"${REPO_ROOT}"'/lib/ui.sh"
+  . "'"${REPO_ROOT}"'/lib/prompt.sh"
+  UI_RICH=1; UI_DIM="<d>"; UI_RESET="<r>"; UI_YELLOW="<y>"
+  UI_G_BAR="|"; UI_S_ON="*"; UI_S_OFF="o"
+  _prompt_draw_options 0 "$(prompt_opt sync "Sync template files" "2 to review" todo)"
+' 2>&1)"
+has "a hint with no token is colored whole" "${no_token}" "<y>2 to review<r>"
+
+# --- the dashboard leads with whatever has work -----------------------------
+# On a project already in sync, "Sync template files" can only repeat the card
+# above it, so it must not sit on the default and spend the first row.
+menu_order() {
+  dashboard_actions "$1" "hint" "off" | while IFS= read -r rec; do
+    _prompt_split "${rec}"
+    printf '%s ' "${PROMPT_VALUE}"
+  done
+}
+MENUPROJ="${WORK}/menuproj"
+mkdir -p "${MENUPROJ}"
+
+SYNC_N_NEW=0 SYNC_N_UPDATE=0 SYNC_N_REVIEW=0 SYNC_N_LEGACY=0
+is "with nothing to sync, sync drops below the toggles" \
+  "$(menu_order "${MENUPROJ}")" "trellis ccflow integ sync syncall quit "
+
+SYNC_N_REVIEW=2
+is "with work to do, sync leads the menu" \
+  "$(menu_order "${MENUPROJ}")" "sync trellis ccflow integ syncall quit "
+SYNC_N_REVIEW=0
+
+# Each toggle reports the state the project is actually in.
+_prompt_split "$(dashboard_actions "${MENUPROJ}" "" "" | grep -F 'ccflow')"
+is "an absent workflow file reads off" "${PROMPT_HINT}" "(off) CC-Cowork-Workflow.md"
+printf 'workflow\n' > "${MENUPROJ}/CC-Cowork-Workflow.md"
+printf '<INTEGRATION id="trellis">\nx\n</INTEGRATION>\n' > "${MENUPROJ}/AGENTS.md"
+_prompt_split "$(dashboard_actions "${MENUPROJ}" "" "" | grep -F 'ccflow')"
+is "a present workflow file reads on"  "${PROMPT_HINT}" "(on) CC-Cowork-Workflow.md"
+_prompt_split "$(dashboard_actions "${MENUPROJ}" "" "" | grep -F 'integ')"
+is "the Trellis block reports itself present" "${PROMPT_HINT}" "(on) in AGENTS.md"
 
 # --- every ui_* the tool calls has to exist ---------------------------------
 # ui_info did not. lib/ui.sh defines ui_log, and eleven call sites across
