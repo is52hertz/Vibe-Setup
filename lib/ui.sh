@@ -232,11 +232,18 @@ ui_kv() {
 # what KIND of state a value is, never what the word happens to say, so the
 # vocabulary can grow without the palette drifting:
 #
-#   ok    green   ready, in use, current            Active, Initialized
-#   info  cyan    a neutral identifier, not a state Modern, a version, a list
-#   todo  yellow  works, but there is work to do    Legacy, Not initialized
-#   off   dim     deliberately off, or absent       Disabled, None
-#   bad   red     broken or blocking                Missing, CLI not installed
+#   ok      green   ready, in use, current            Active, Initialized
+#   info    cyan    a neutral identifier, not a state Modern, a version, a list
+#   todo    yellow  works, but there is work to do    Legacy, Not initialized
+#   off     dim     deliberately off, or absent       Disabled, None
+#   bad     red     broken or blocking                Missing, CLI not installed
+#   neutral none    plain, carrying no judgment       a toggle reading "off"
+#
+# "neutral" exists for a value that has to be READ rather than judged. A
+# toggle's "off" is the case: it is a legitimate state, so red or yellow would
+# libel it, but dim would hide the very thing the reader is checking. Left at
+# the default foreground it stands out against a column that is otherwise all
+# dim, without claiming anything is wrong.
 #
 # "off" is dim rather than red on purpose. CC-Workflow is off in most projects
 # by design, and painting the normal case red spends the one color that should
@@ -247,11 +254,12 @@ ui_kv() {
 # to a color-blind reader or a piped log.
 _ui_state_color() {
   case "$1" in
-    ok)    printf '%s' "${UI_GREEN}" ;;
-    info)  printf '%s' "${UI_CYAN}" ;;
-    todo)  printf '%s' "${UI_YELLOW}" ;;
-    bad)   printf '%s' "${UI_RED}" ;;
-    off|*) printf '%s' "${UI_DIM}" ;;
+    ok)      printf '%s' "${UI_GREEN}" ;;
+    info)    printf '%s' "${UI_CYAN}" ;;
+    todo)    printf '%s' "${UI_YELLOW}" ;;
+    bad)     printf '%s' "${UI_RED}" ;;
+    neutral) printf '' ;;
+    off|*)   printf '%s' "${UI_DIM}" ;;
   esac
 }
 

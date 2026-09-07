@@ -80,31 +80,32 @@ _prompt_split() {
 
 # Draw the hint column for the option just split.
 #
-# The hint itself does not move: the same dim text whether or not the row is
-# under the cursor, so nothing shifts sideways as the selection travels. What
-# the cursor adds is the active note — a toggle's current on/off — appended in
-# the level's color. A toggle is the one kind of entry where Enter changes
-# something, so its state appears exactly when the user is about to act on it,
-# and the rest of the time the menu stays quiet.
+# The cursor reveals the state note, and the note goes in FRONT of the hint,
+# which pushes the hint text to the right on the selected row only. That
+# sideways shift is the point, not a flaw: a toggle is the one entry where
+# Enter changes something, and a state that merely fades in beside a static
+# line is easy to skip over. The row moving under the cursor is what makes it
+# impossible to miss. Nothing is reserved or padded, deliberately.
 #
-# A hint carrying a level but no active note is colored whole, which is how the
-# sync entry says at a glance whether it has work. A hint with no level at all
-# stays dim, as every record predating the level looked.
+# A hint carrying a level but no note is colored whole, which is how the sync
+# entry says at a glance whether it has work. A hint with no level at all stays
+# dim, as every record predating the level looked.
 # Usage: _prompt_draw_hint <is_selected>
 _prompt_draw_hint() {
   local is_selected="${1:-0}"
 
-  if [[ -n "${PROMPT_HINT}" ]]; then
-    if [[ -n "${PROMPT_HINT_LEVEL}" && -z "${PROMPT_ACTIVE}" ]]; then
-      printf '   %s%s%s' "$(_ui_state_color "${PROMPT_HINT_LEVEL}")" "${PROMPT_HINT}" "${UI_RESET}" >&2
-    else
-      printf '   %s%s%s' "${UI_DIM}" "${PROMPT_HINT}" "${UI_RESET}" >&2
-    fi
+  printf '   ' >&2
+  if [[ "${is_selected}" -eq 1 && -n "${PROMPT_ACTIVE}" ]]; then
+    printf '%s%s%s ' \
+      "$(_ui_state_color "${PROMPT_HINT_LEVEL:-off}")" "${PROMPT_ACTIVE}" "${UI_RESET}" >&2
   fi
 
-  if [[ "${is_selected}" -eq 1 && -n "${PROMPT_ACTIVE}" ]]; then
-    printf '  %s%s%s' \
-      "$(_ui_state_color "${PROMPT_HINT_LEVEL:-off}")" "${PROMPT_ACTIVE}" "${UI_RESET}" >&2
+  [[ -n "${PROMPT_HINT}" ]] || return 0
+  if [[ -n "${PROMPT_HINT_LEVEL}" && -z "${PROMPT_ACTIVE}" ]]; then
+    printf '%s%s%s' \
+      "$(_ui_state_color "${PROMPT_HINT_LEVEL}")" "${PROMPT_HINT}" "${UI_RESET}" >&2
+  else
+    printf '%s%s%s' "${UI_DIM}" "${PROMPT_HINT}" "${UI_RESET}" >&2
   fi
 }
 

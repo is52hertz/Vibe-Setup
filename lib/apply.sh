@@ -920,8 +920,10 @@ dashboard_actions() {
   # The hint says WHAT a toggle acts on and never moves; the cursor reveals the
   # state it is currently in. See _prompt_draw_hint for why the state is
   # appended on selection rather than sitting in the hint permanently.
-  local cc_hint="CC-Cowork-Workflow.md" cc_level="off" cc_active="off"
-  local integ_hint="in AGENTS.md"       integ_level="off" integ_active="off"
+  # "off" is a legitimate state, so it reads neutral rather than dim: the whole
+  # point of revealing it is that the user can see which way the toggle will go.
+  local cc_hint="CC-Cowork-Workflow.md" cc_level="neutral" cc_active="off"
+  local integ_hint="in AGENTS.md"       integ_level="neutral" integ_active="off"
 
   if [[ -f "${project_dir}/CC-Cowork-Workflow.md" ]]; then
     cc_level="ok"

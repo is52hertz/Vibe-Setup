@@ -477,10 +477,35 @@ draw_menu() {
 }
 selected_row="$(draw_menu 0)"
 other_row="$(draw_menu 1)"
-has   "the selected row appends its state"    "${selected_row}" "<g>on<r>"
-hasnt "an unselected row keeps its state off" "${other_row}"    "<g>on<r>"
+has   "the selected row shows its state"      "${selected_row}" "<g>on<r>"
+hasnt "an unselected row keeps its state off" "${other_row}"    "<g>on"
 has   "the hint is there either way"          "${selected_row}" "<d>in AGENTS.md<r>"
 has   "and reads identically when not selected" "${other_row}"  "<d>in AGENTS.md<r>"
+
+# The note goes in FRONT, which pushes the hint right on the selected row only.
+# That sideways shift is deliberate — it is what makes the state impossible to
+# miss on the one row where Enter changes something — so assert it happens.
+sel_col="$(printf '%s' "${selected_row}" | sed -n '1p' | sed 's/<[a-z]*>//g' | awk '{ print index($0, "in AGENTS.md") }')"
+oth_col="$(printf '%s' "${other_row}"    | sed -n '1p' | sed 's/<[a-z]*>//g' | awk '{ print index($0, "in AGENTS.md") }')"
+if [[ "${sel_col}" -gt "${oth_col}" && "${oth_col}" -gt 0 ]]; then
+  ok "the note pushes the hint right on the selected row"
+else
+  ko "the note pushes the hint right on the selected row" "selected col ${sel_col}, unselected col ${oth_col}"
+fi
+
+# And "off" is readable rather than hidden: a legitimate state must not be dim,
+# which is the one thing the reader is there to check.
+off_row="$(bash -c '
+  set -euo pipefail
+  . "'"${REPO_ROOT}"'/lib/ui.sh"
+  . "'"${REPO_ROOT}"'/lib/prompt.sh"
+  UI_RICH=1; UI_DIM="<d>"; UI_RESET="<r>"; UI_GREEN="<g>"
+  UI_G_BAR="|"; UI_S_ON="*"; UI_S_OFF="o"
+  _prompt_draw_options 0 "$(prompt_opt integ "Toggle Trellis block" "in AGENTS.md" neutral off)"
+' 2>&1)"
+has   "an off state is shown"          "${off_row}" "off"
+hasnt "an off state is not dimmed"     "${off_row}" "<d>off"
+is    "neutral carries no color at all" "$(UI_DIM=D UI_GREEN=G _ui_state_color neutral)" ""
 
 # A hint with a level but no active note is still colored whole — that is how
 # the sync entry says at a glance whether it has work.
@@ -541,7 +566,7 @@ SYNC_N_REVIEW=0
 # Each toggle reports the state the project is actually in.
 _prompt_split "$(dashboard_actions "${MENUPROJ}" "" "" | grep -F 'ccflow')"
 is "an absent workflow file reads off"       "${PROMPT_ACTIVE}"     "off"
-is "and takes the off level"                 "${PROMPT_HINT_LEVEL}" "off"
+is "and reads neutral, not dim"              "${PROMPT_HINT_LEVEL}" "neutral"
 is "while its hint names what it toggles"    "${PROMPT_HINT}"       "CC-Cowork-Workflow.md"
 printf 'workflow\n' > "${MENUPROJ}/CC-Cowork-Workflow.md"
 printf '<INTEGRATION id="trellis">\nx\n</INTEGRATION>\n' > "${MENUPROJ}/AGENTS.md"
