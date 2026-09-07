@@ -291,6 +291,53 @@ is "a record round-trips its value" "${PROMPT_VALUE}" "--claude --codex"
 is "a record round-trips its label" "${PROMPT_LABEL}" "Claude Code + Codex"
 is "a record round-trips its hint"  "${PROMPT_HINT}"  "two: platforms"
 
+# --- every ui_* the tool calls has to exist ---------------------------------
+# ui_info did not. lib/ui.sh defines ui_log, and eleven call sites across
+# lib/apply.sh and lib/trellis.sh asked for ui_info instead, so both dashboard
+# toggles and three Trellis operations died with "ui_info: command not found"
+# the moment a user picked them. Neither suite can reach an interactive menu, so
+# a name check is what catches this class — not a smoke test.
+ui_defined="$(grep -hoE '^ui_[a-z_]+\(\)' "${REPO_ROOT}"/lib/*.sh | tr -d '()' | sort -u)"
+ui_missing=""
+for name in $(grep -rhoE '\bui_[a-z_]+\b' "${REPO_ROOT}"/lib/*.sh "${REPO_ROOT}/vibe-init.sh" | sort -u); do
+  printf '%s\n' "${ui_defined}" | grep -qx "${name}" || ui_missing="${ui_missing}${name} "
+done
+is "every ui_* the tool calls is defined somewhere in lib/" "${ui_missing% }" ""
+
+# --- the info level is dim, and the copy block is not in the gutter ---------
+rich_info="$(bash -c '
+  set -euo pipefail
+  . "'"${REPO_ROOT}"'/lib/ui.sh"
+  UI_RICH=1; UI_DIM="<dim>"; UI_RESET="<off>"; UI_G_BAR="|"
+  ui_info "copied a file"
+' 2>&1)"
+has "rich info is drawn dim" "${rich_info}" "<dim>copied a file<off>"
+
+plain_info="$(NO_COLOR=1 bash -c '
+  set -euo pipefail
+  . "'"${REPO_ROOT}"'/lib/ui.sh"
+  ui_info "copied a file"
+' 2>&1)"
+is "plain info keeps the bare wording" "${plain_info}" "[vibe-init] copied a file"
+
+plain_fence="$(NO_COLOR=1 bash -c '
+  set -euo pipefail
+  . "'"${REPO_ROOT}"'/lib/ui.sh"
+  ui_copy_open "suggested prompt for your AI agent"
+  ui_copy_close
+' 2>&1)"
+has   "the copy block announces itself"     "${plain_fence}" "suggested prompt for your AI agent"
+hasnt "the copy block never hangs off the gutter" "${plain_fence}" "|"
+hasnt "the copy block carries no plain prefix"    "${plain_fence}" "[vibe-init]"
+
+rich_fence="$(bash -c '
+  set -euo pipefail
+  . "'"${REPO_ROOT}"'/lib/ui.sh"
+  UI_RICH=1; UI_DIM="<dim>"; UI_RESET="<off>"; UI_RULE="-"
+  ui_copy_open "a title"
+' 2>&1)"
+has "the copy rule is dim, not the loudest thing on screen" "${rich_fence}" "<dim>---------- a title ----------<off>"
+
 # --- list_blocks / extract_block -------------------------------------------
 # The opening tag has to own its line to count. That is how the assembled files
 # are written, and it is what keeps tag-shaped prose out of the vocabulary — the

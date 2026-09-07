@@ -29,7 +29,7 @@
 # Compatible with macOS Bash 3.2.
 
 # Source helper modules if not already loaded
-if ! command -v ui_box_start >/dev/null 2>&1; then
+if ! command -v ui_kv >/dev/null 2>&1; then
   [[ -f "${SCRIPT_DIR}/lib/ui.sh" ]] && . "${SCRIPT_DIR}/lib/ui.sh"
 fi
 if ! command -v has_block >/dev/null 2>&1; then
@@ -455,7 +455,7 @@ suggest_template_merges() {
   if [[ "${modern_count}" -gt 0 ]]; then
     info "copy the prompt between the lines below and give it to your AI agent:"
     {
-      printf '%s\n' "────────── suggested prompt for your AI agent ──────────"
+      ui_copy_open "suggested prompt for your AI agent"
       printf '%s\n' "Bring my files up to date with vibe-init's latest templates. For each pair,"
       printf '%s\n' "the .template is the NEW template version and the plain file is MY current"
       printf '%s\n' "one (which may hold my customizations):"
@@ -477,7 +477,7 @@ suggest_template_merges() {
       printf '%s\n' "silently — list each conflict and ask me to decide. When you ask me anything,"
       printf '%s\n' "write it in Simplified Chinese (中文); keep code, identifiers, and your own"
       printf '%s\n' "reasoning in English. After I confirm, delete the .template files."
-      printf '%s\n' "────────────────────────────────────────────────────────"
+      ui_copy_close
     } >&2
   fi
 
@@ -490,7 +490,7 @@ suggest_template_merges() {
       info "between the lines below to convert them:"
     fi
     {
-      printf '%s\n' "────────── suggested prompt for your AI agent ──────────"
+      ui_copy_open "suggested prompt for your AI agent"
       printf '%s\n' "Restructure my files into the new <TAG> block format. For each pair, the"
       printf '%s\n' ".template is the NEW template version and the plain file is MY current"
       printf '%s\n' "one, written before the <TAG> markers existed:"
@@ -509,7 +509,7 @@ suggest_template_merges() {
       printf '%s\n' "When you ask me anything, write it in Simplified Chinese (中文); keep code,"
       printf '%s\n' "identifiers, and your own reasoning in English. After I confirm, delete the"
       printf '%s\n' ".template files."
-      printf '%s\n' "────────────────────────────────────────────────────────"
+      ui_copy_close
     } >&2
   fi
 }

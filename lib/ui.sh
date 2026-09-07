@@ -57,6 +57,8 @@ if [[ "${UI_COLOR_ENABLED}" -eq 1 ]]; then
   UI_S_OFF="○"       # unselected option
   UI_S_CHECKED="■"   # ticked box in a multi-select
   UI_S_UNCHECKED="□"
+
+  UI_RULE="─"        # fences a copy-me block
 else
   UI_RESET=""
   UI_BOLD=""
@@ -82,6 +84,8 @@ else
   UI_S_OFF="( )"
   UI_S_CHECKED="[x]"
   UI_S_UNCHECKED="[ ]"
+
+  UI_RULE="-"
 fi
 
 # Prefix for plain-mode lines. Unchanged from the original output format: scripts
@@ -227,7 +231,22 @@ ui_kv() {
 # The four message levels. Plain mode keeps the exact wording the tool has always
 # printed — "warning: " and "error: " included — so nothing that greps the output
 # has to change.
-ui_log() { _ui_emit "$*"; }
+#
+# Info is drawn dim on purpose: these are progress lines — what was copied, what
+# is being applied — and they sit under the section headings and status rows that
+# the eye should land on first. Undimmed they competed with the content for
+# attention and made a routine sync read like a wall of alarms.
+ui_info() {
+  if [[ "${UI_RICH}" -eq 1 ]]; then
+    _ui_emit "${UI_DIM}$*${UI_RESET}"
+  else
+    _ui_emit "$*"
+  fi
+}
+
+# ui_log is the older name for the same level; vibe-init.sh's info() and a good
+# deal of lib/ call it, so both stay.
+ui_log() { ui_info "$@"; }
 
 ui_ok() {
   if [[ "${UI_RICH}" -eq 1 ]]; then
@@ -251,4 +270,29 @@ ui_error() {
   else
     _ui_emit "error: $*"
   fi
+}
+
+# Open and close a block the user is meant to select and copy out of the
+# terminal verbatim — an agent prompt, say.
+#
+# Deliberately NOT hung off the gutter: a copy-paste must not pick up "│  "
+# prefixes, so the body between these two rules is printed raw by the caller.
+# The rules themselves are dim, because they are packaging rather than content
+# — undimmed they read as the loudest thing on screen, which is backwards.
+# Usage: ui_copy_open [title]; …the body…; ui_copy_close
+ui_copy_open() {
+  local title="${1:-}"
+  local rule=""
+
+  rule="$(_ui_repeat "${UI_RULE}" 10)"
+  if [[ -n "${title}" ]]; then
+    printf '%s%s %s %s%s\n' \
+      "${UI_DIM}" "${rule}" "${title}" "${rule}" "${UI_RESET}" >&2
+  else
+    printf '%s%s%s\n' "${UI_DIM}" "$(_ui_repeat "${UI_RULE}" 56)" "${UI_RESET}" >&2
+  fi
+}
+
+ui_copy_close() {
+  printf '%s%s%s\n' "${UI_DIM}" "$(_ui_repeat "${UI_RULE}" 56)" "${UI_RESET}" >&2
 }
