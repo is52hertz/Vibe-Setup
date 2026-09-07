@@ -98,18 +98,33 @@ trellis_add_platform() {
 # long interrogation for no gain, and "Sync everything and exit" used to walk
 # into it every single time. So when the two versions match, say so and ask
 # first — the answer defaults to no, and a scripted run therefore skips it.
+# True when `trellis update` would actually move the project: it has a Trellis
+# directory, the CLI is installed, and the two versions differ. The menu reveals
+# it and the gate below asks about its inverse, so the comparison lives in one
+# place rather than two that can drift.
+trellis_update_pending() {
+  local project_dir="$1"
+  local cli_version="" project_version=""
+
+  trellis_has_project "${project_dir}" || return 1
+  cli_version="$(trellis_cli_version || true)"
+  [[ -n "${cli_version}" ]] || return 1
+  project_version="$(trellis_project_version "${project_dir}" 2>/dev/null || true)"
+  [[ -n "${project_version}" ]] || return 0
+  [[ "${project_version}" != "${cli_version}" ]]
+}
+
 trellis_update_project() {
   local project_dir="$1"
-  local project_version="" cli_version=""
+  local project_version=""
 
   if ! trellis_is_installed; then
     ui_error "Trellis CLI is not installed."
     return 1
   fi
 
-  project_version="$(trellis_project_version "${project_dir}" 2>/dev/null || true)"
-  cli_version="$(trellis_cli_version || true)"
-  if [[ -n "${project_version}" && "${project_version}" == "${cli_version}" ]]; then
+  if ! trellis_update_pending "${project_dir}"; then
+    project_version="$(trellis_project_version "${project_dir}" 2>/dev/null || true)"
     ui_info "Trellis is already at v${project_version}; an update would only re-scan"
     ui_info "and ask about the files you have edited."
     ask_yes_no "Run 'trellis update' anyway?" "no" || return 0

@@ -507,17 +507,20 @@ has   "an off state is shown"          "${off_row}" "off"
 hasnt "an off state is not dimmed"     "${off_row}" "<d>off"
 is    "neutral carries no color at all" "$(UI_DIM=D UI_GREEN=G _ui_state_color neutral)" ""
 
-# A hint with a level but no active note is still colored whole — that is how
-# the sync entry says at a glance whether it has work.
+# Resident text is always dim, even carrying a level. It never varies, so it has
+# no news to deliver; all colour belongs to the part that changes. A row that
+# coloured its resident text would compete with its own reveal.
 sync_row="$(bash -c '
   set -euo pipefail
   . "'"${REPO_ROOT}"'/lib/ui.sh"
   . "'"${REPO_ROOT}"'/lib/prompt.sh"
   UI_RICH=1; UI_DIM="<d>"; UI_RESET="<r>"; UI_YELLOW="<y>"
   UI_G_BAR="|"; UI_S_ON="*"; UI_S_OFF="o"
-  _prompt_draw_options 0 "$(prompt_opt sync "Sync template files" "2 to review" todo)"
+  _prompt_draw_options 0 "$(prompt_opt sync "Sync template files" "templates" todo "2 to review")"
 ' 2>&1)"
-has "a note-less hint takes the level color whole" "${sync_row}" "<y>2 to review<r>"
+has   "resident text stays dim whatever its level" "${sync_row}" "<d>templates<r>"
+has   "and the reveal is what carries the colour"  "${sync_row}" "<y>2 to review<r>"
+hasnt "the resident text is never level-coloured"  "${sync_row}" "<y>templates"
 
 # A five-field record has to round-trip, and shorter ones must not change.
 _prompt_split "$(prompt_opt integ "Toggle Trellis block" "in AGENTS.md" ok on)"
@@ -541,6 +544,74 @@ plain_menu="$(NO_COLOR=1 bash -c '
     "$(prompt_opt integ "Toggle Trellis block" "in AGENTS.md" ok on)" </dev/null
 ' 2>&1)"
 has "the no-color list still shows the state" "${plain_menu}" "in AGENTS.md (on)"
+
+# --- every dynamic value lives in the reveal, not the resident text ---------
+# The principle in AGENTS.md: resident text names what a row is about and never
+# varies; anything that changes is revealed under the cursor. A row whose
+# resident text moved with the project would teach the reader to re-scan the
+# whole column instead of trusting it.
+NOTEPROJ="${WORK}/noteproj"
+mkdir -p "${NOTEPROJ}"
+SYNC_N_NEW=0 SYNC_N_UPDATE=0 SYNC_N_REVIEW=0 SYNC_N_LEGACY=0
+
+resident_of() {
+  _prompt_split "$(dashboard_actions "${NOTEPROJ}" | grep -F "$1")"
+  printf '%s' "${PROMPT_HINT}"
+}
+reveal_of() {
+  _prompt_split "$(dashboard_actions "${NOTEPROJ}" | grep -F "$1")"
+  printf '%s' "${PROMPT_ACTIVE}"
+}
+
+before_sync="$(resident_of sync)"
+before_all="$(resident_of syncall)"
+SYNC_N_REVIEW=3
+after_sync="$(resident_of sync)"
+after_all="$(resident_of syncall)"
+is "the sync row's resident text does not move with the plan"  "${before_sync}" "${after_sync}"
+is "nor does sync-everything's"                                "${before_all}"  "${after_all}"
+is "and it names what the row is about"                        "${after_sync}"  "templates"
+
+# The version the sync would bring the project to is revealed, not resident.
+has "the reveal carries the template version" "$(reveal_of sync)" "v${VIBE_INIT_VERSION}"
+has "and the shape of the work beside it"     "$(reveal_of sync)" "3 to review"
+SYNC_N_REVIEW=0
+
+# "Sync everything and exit" used to promise "templates + Trellis update"
+# unconditionally. On a project with nothing to do it does neither.
+is "with nothing pending it says so" "$(reveal_of syncall)" "nothing to do"
+
+# A reveal must never be dimmer than the resident text it sits next to, or the
+# two read as one run-on phrase and the reveal stops being a reveal.
+_prompt_split "$(dashboard_actions "${NOTEPROJ}" | grep -F 'syncall')"
+is    "an idle reveal reads neutral, not dim" "${PROMPT_HINT_LEVEL}" "neutral"
+_prompt_split "$(dashboard_actions "${NOTEPROJ}" | grep -F "$(printf 'sync\x1f')")"
+is    "so does an up-to-date sync reveal"     "${PROMPT_HINT_LEVEL}" "neutral"
+is    "off is lifted to neutral"              "$(reveal_level off)"  "neutral"
+is    "an empty level is lifted too"          "$(reveal_level "")"   "neutral"
+is    "a real level passes through"           "$(reveal_level todo)" "todo"
+
+# Trellis reveals what opening the submenu would show, so the versions can be
+# read without a trip in and back out.
+trellis_note_for() {
+  PATH="${FAKE_TRELLIS}:${PATH}" bash -c '
+    set -uo pipefail
+    SCRIPT_DIR="'"${WORK}"'"
+    . "'"${REPO_ROOT}"'/lib/ui.sh"
+    . "'"${REPO_ROOT}"'/lib/prompt.sh"
+    . "'"${REPO_ROOT}"'/lib/block_engine.sh"
+    . "'"${REPO_ROOT}"'/lib/trellis.sh"
+    . "'"${REPO_ROOT}"'/lib/apply.sh"
+    trellis_menu_note "'"$1"'"
+  ' 2>/dev/null
+}
+mkdir -p "${WORK}/tnote/.trellis"
+printf '0.6.16\n' > "${WORK}/tnote/.trellis/.version"
+has "a current Trellis reads as current" "$(trellis_note_for "${WORK}/tnote")" "v0.6.16, current"
+printf '0.5.0\n' > "${WORK}/tnote/.trellis/.version"
+has "a stale one shows the move"         "$(trellis_note_for "${WORK}/tnote")" "v0.5.0 -> CLI v0.6.16"
+mkdir -p "${WORK}/tnote2"
+has "a project without Trellis says so"  "$(trellis_note_for "${WORK}/tnote2")" "not initialized"
 
 # --- the dashboard leads with whatever has work -----------------------------
 # On a project already in sync, "Sync template files" can only repeat the card

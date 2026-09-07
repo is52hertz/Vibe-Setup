@@ -896,34 +896,97 @@ toggle_trellis_integration() {
 # Interactive Dashboard Main Hub
 # -----------------------------------------------------------------------------
 
+# A reveal is the part of a row that changes, so it must never be dimmer than
+# the resident text beside it: at "off" the two sink into the same grey and read
+# as one run-on phrase, which is the opposite of the point. Anything that would
+# be dim reads neutral instead — plain and undimmed, claiming nothing.
+reveal_level() {
+  case "${1:-}" in
+    off|"") printf 'neutral\n' ;;
+    *)      printf '%s\n' "$1" ;;
+  esac
+}
+
+# What "Sync template files" would do right now, revealed under the cursor: the
+# template version it would bring the project to, and the shape of the work.
+# Echoes "<note>\t<level>".
+sync_menu_note() {
+  local project_dir="$1"
+  local tracked="" version="v${VIBE_INIT_VERSION}"
+
+  tracked="$(state_get "${project_dir}" version)"
+  if [[ -n "${tracked}" && "${tracked}" != "${VIBE_INIT_VERSION}" ]]; then
+    version="v${tracked} -> v${VIBE_INIT_VERSION}"
+  fi
+  printf '%s, %s\t%s\n' "${version}" "$(sync_summary)" "$(reveal_level "$(sync_summary_level)")"
+}
+
+# What "Trellis management" would find if opened, revealed under the cursor —
+# so the versions can be read without a trip into the submenu and back out.
+# Echoes "<note>\t<level>".
+trellis_menu_note() {
+  local project_dir="$1"
+  local cli_version="" project_version=""
+
+  cli_version="$(trellis_cli_version || true)"
+  if [[ -z "${cli_version}" ]]; then
+    printf 'not installed\tbad\n'
+    return
+  fi
+  if ! trellis_has_project "${project_dir}"; then
+    printf 'not initialized\ttodo\n'
+    return
+  fi
+  project_version="$(trellis_project_version "${project_dir}" 2>/dev/null || true)"
+  if trellis_update_pending "${project_dir}"; then
+    printf 'v%s -> CLI v%s\ttodo\n' "${project_version:-unknown}" "${cli_version}"
+    return
+  fi
+  printf 'v%s, current\tok\n' "${project_version}"
+}
+
+# What "Sync everything and exit" would actually do. Its resident text used to
+# promise "templates + Trellis update" unconditionally, which on a project
+# already in sync with Trellis at the CLI's version is neither — it just exits.
+# Echoes "<note>\t<level>".
+syncall_menu_note() {
+  local project_dir="$1"
+
+  if sync_has_work; then
+    printf '%s\t%s\n' "$(sync_summary)" "$(reveal_level "$(sync_summary_level)")"
+    return
+  fi
+  if trellis_update_pending "${project_dir}"; then
+    printf 'Trellis update only\ttodo\n'
+    return
+  fi
+  printf 'nothing to do\tneutral\n'
+}
+
 # The dashboard's menu, in order, one prompt_opt record per line. Split out of
 # orchestrator_dashboard so the ordering rule can be tested: the loop around it
 # needs a terminal, this does not.
 #
 # The menu leads with whatever actually has work. On a project already in sync,
-# "Sync template files" can only repeat what the diagnostics card just said, so
-# it drops below the entries that can still change something instead of sitting
-# on the default and spending the first row on nothing. It is demoted rather
-# than removed — the plan can be wrong about a template edited by hand, and
-# hiding the way to re-check would be worse than one extra row.
+# "Sync template files" drops below the entries that can still change something
+# instead of sitting on the default and spending the first row on nothing. It is
+# demoted rather than removed — the plan can be wrong about a template edited by
+# hand, and hiding the way to re-check would be worse than one extra row.
 #
-# Each toggle carries its own state as a "(on)"/"(off)" token, which the
-# selector draws in the level's color. A toggle is the one kind of entry where
-# a mis-keyed Enter changes something, so its current state belongs in the menu
-# rather than only in the card above it.
+# Every row splits the same way (see AGENTS.md, "Resident vs. revealed"): the
+# resident hint names what the row is about and never varies, and everything
+# that changes — a toggle's state, a version, a count — is revealed under the
+# cursor, in front of the hint.
 #
-# Usage: dashboard_actions <project_dir> <sync_hint> <sync_level>
+# Usage: dashboard_actions <project_dir>
 dashboard_actions() {
   local project_dir="$1"
-  local sync_state="${2:-}"
-  local sync_level="${3:-}"
-  # The hint says WHAT a toggle acts on and never moves; the cursor reveals the
-  # state it is currently in. See _prompt_draw_hint for why the state is
-  # appended on selection rather than sitting in the hint permanently.
-  # "off" is a legitimate state, so it reads neutral rather than dim: the whole
-  # point of revealing it is that the user can see which way the toggle will go.
-  local cc_hint="CC-Cowork-Workflow.md" cc_level="neutral" cc_active="off"
-  local integ_hint="in AGENTS.md"       integ_level="neutral" integ_active="off"
+  local cc_level="neutral" cc_active="off"
+  local integ_level="neutral" integ_active="off"
+  local sync_note="" sync_level=""
+  local trellis_note="" trellis_level=""
+  local all_note="" all_level=""
+  local record=""
 
   if [[ -f "${project_dir}/CC-Cowork-Workflow.md" ]]; then
     cc_level="ok"
@@ -934,24 +997,39 @@ dashboard_actions() {
     integ_active="on"
   fi
 
+  record="$(sync_menu_note "${project_dir}")"
+  sync_note="${record%%$'\t'*}"
+  sync_level="${record#*$'\t'}"
+  record="$(trellis_menu_note "${project_dir}")"
+  trellis_note="${record%%$'\t'*}"
+  trellis_level="${record#*$'\t'}"
+  record="$(syncall_menu_note "${project_dir}")"
+  all_note="${record%%$'\t'*}"
+  all_level="${record#*$'\t'}"
+
   if sync_has_work; then
-    prompt_opt sync "Sync template files" "${sync_state}" "${sync_level}"; printf '\n'
+    prompt_opt sync "Sync template files" "templates" "${sync_level}" "${sync_note}"
+    printf '\n'
   fi
-  prompt_opt trellis "Trellis management"   "platforms, update, upgrade"; printf '\n'
-  prompt_opt ccflow  "Toggle CC-Workflow"   "${cc_hint}"    "${cc_level}"    "${cc_active}"; printf '\n'
-  prompt_opt integ   "Toggle Trellis block" "${integ_hint}" "${integ_level}" "${integ_active}"; printf '\n'
+  prompt_opt trellis "Trellis management" "platforms, update, upgrade" \
+    "${trellis_level}" "${trellis_note}"; printf '\n'
+  prompt_opt ccflow "Toggle CC-Workflow" "CC-Cowork-Workflow.md" \
+    "${cc_level}" "${cc_active}"; printf '\n'
+  prompt_opt integ "Toggle Trellis block" "in AGENTS.md" \
+    "${integ_level}" "${integ_active}"; printf '\n'
   if ! sync_has_work; then
-    prompt_opt sync "Sync template files" "${sync_state}" "${sync_level}"; printf '\n'
+    prompt_opt sync "Sync template files" "templates" "${sync_level}" "${sync_note}"
+    printf '\n'
   fi
-  prompt_opt syncall "Sync everything and exit" "templates + Trellis update"; printf '\n'
-  prompt_opt quit    "Exit"; printf '\n'
+  prompt_opt syncall "Sync everything and exit" "templates + Trellis, then exits" \
+    "${all_level}" "${all_note}"; printf '\n'
+  prompt_opt quit "Exit"; printf '\n'
 }
 
 orchestrator_dashboard() {
   local project_dir="$1"
   local choice=""
   local record=""
-  local sync_state="" sync_level=""
   local -a actions=()
 
   # Non-interactive (-y, no TTY) or driven by an explicit --files / --on-exists
@@ -971,21 +1049,16 @@ orchestrator_dashboard() {
   while true; do
     show_project_diagnostics "${project_dir}"
 
-    # Plan the sync before drawing the menu, so the entry says what there is to
-    # do instead of inviting the user into a run that has nothing to change.
-    if [[ -n "${ON_EXISTS}" ]]; then
-      sync_state="${TEMPLATE_SET_LABEL}"
-      sync_level=""
-    else
+    # Plan the sync before building the menu: the ordering and every reveal on
+    # it read the result.
+    if [[ -z "${ON_EXISTS}" ]]; then
       sync_run "${project_dir}" plan "${TEMPLATE_FILES[@]}"
-      sync_state="$(sync_summary)"
-      sync_level="$(sync_summary_level)"
     fi
 
     actions=()
     while IFS= read -r record; do
       [[ -n "${record}" ]] && actions+=("${record}")
-    done < <(dashboard_actions "${project_dir}" "${sync_state}" "${sync_level}")
+    done < <(dashboard_actions "${project_dir}")
 
     # The selector starts on the first entry, because dashboard_actions already
     # put the most useful one there.

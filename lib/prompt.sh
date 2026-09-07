@@ -28,14 +28,16 @@
 PROMPT_US=$'\037'
 
 # Build one option record:
-#   prompt_opt <value> <label> [hint] [hint_level] [active_note]
+#   prompt_opt <value> <label> [hint] [level] [active_note]
 #
-# hint_level is one of lib/ui.sh's state levels (ok / info / todo / off) and
-# colors the state-bearing part of the row. active_note is shown only while the
-# row is under the cursor — a toggle's current on/off, revealed exactly when the
-# user is about to act on it.
+# The hint is the row's RESIDENT text: what the row is about, the same on every
+# redraw, always dim. active_note is the REVEALED part, shown only while the row
+# is under the cursor and carrying everything that varies — a toggle's on/off, a
+# version, a count. level (one of lib/ui.sh's state levels) colors the revealed
+# part; resident text needs no semantic color, because it never changes and so
+# never has news to deliver.
 #
-# Both are optional, and a two- or three-field record still splits exactly as it
+# All three are optional, and a two- or three-field record splits exactly as it
 # always did, so no existing caller changes.
 prompt_opt() {
   local record=""
@@ -87,9 +89,9 @@ _prompt_split() {
 # line is easy to skip over. The row moving under the cursor is what makes it
 # impossible to miss. Nothing is reserved or padded, deliberately.
 #
-# A hint carrying a level but no note is colored whole, which is how the sync
-# entry says at a glance whether it has work. A hint with no level at all stays
-# dim, as every record predating the level looked.
+# The resident hint is always dim. It never varies, so it has no news to carry
+# and no claim on the reader's attention; colouring it would only compete with
+# the part that does change. All colour belongs to the revealed note.
 # Usage: _prompt_draw_hint <is_selected>
 _prompt_draw_hint() {
   local is_selected="${1:-0}"
@@ -101,12 +103,7 @@ _prompt_draw_hint() {
   fi
 
   [[ -n "${PROMPT_HINT}" ]] || return 0
-  if [[ -n "${PROMPT_HINT_LEVEL}" && -z "${PROMPT_ACTIVE}" ]]; then
-    printf '%s%s%s' \
-      "$(_ui_state_color "${PROMPT_HINT_LEVEL}")" "${PROMPT_HINT}" "${UI_RESET}" >&2
-  else
-    printf '%s%s%s' "${UI_DIM}" "${PROMPT_HINT}" "${UI_RESET}" >&2
-  fi
+  printf '%s%s%s' "${UI_DIM}" "${PROMPT_HINT}" "${UI_RESET}" >&2
 }
 
 # Is there a terminal on stdin to read an answer from?
