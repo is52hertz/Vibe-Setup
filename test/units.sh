@@ -395,21 +395,96 @@ out="$(trellis_update_run "${WORK}/trproj" no)"
 hasnt "a version behind the CLI does not ask" "${out}" "ASKED"
 has   "a version behind the CLI just updates" "${out}" "RAN trellis update"
 
-# --- a hint's state token is highlighted, the rest is context ---------------
-# A toggle is the one entry where a mis-keyed Enter changes something, so its
-# state has to be visible in the menu, not only in the card above it.
-hint_row="$(bash -c '
-  set -euo pipefail
-  . "'"${REPO_ROOT}"'/lib/ui.sh"
-  . "'"${REPO_ROOT}"'/lib/prompt.sh"
-  UI_RICH=1; UI_DIM="<d>"; UI_RESET="<r>"; UI_GREEN="<g>"; UI_CYAN="<c>"
-  UI_G_BAR="|"; UI_S_ON="*"; UI_S_OFF="o"
-  _prompt_draw_options 0 "$(prompt_opt integ "Toggle Trellis block" "(on) in AGENTS.md" ok)"
-' 2>&1)"
-has "the state token takes the level color" "${hint_row}" "<g>(on)<r>"
-has "the rest of the hint stays dim"        "${hint_row}" "<d>in AGENTS.md<r>"
+# --- copying anyway, when the plan says there is nothing to copy ------------
+# The mirror of the Trellis version gate. The plan is very nearly always right
+# that an up-to-date project needs no copy, and "nearly" is why the escape
+# hatch exists: a template edited by hand is invisible to a hash comparison.
+ANYPROJ="${WORK}/anyproj"
+mkdir -p "${ANYPROJ}"
+TEMPLATE_FILES=("AGENTS.md" "CLAUDE.md" ".claude/settings.json")
+DRY_RUN=0
+ensure_dir() { [[ -d "$1" ]] || mkdir -p "$1"; }
+materialize_template_set "${TEMPLATE_DIR}" "ask" "" 0
+cp "${TEMPLATE_DIR}/AGENTS.md" "${ANYPROJ}/AGENTS.md"
+APPLIED_TEMPLATES=()
+APPLIED_LEGACY=()
+copy_all_templates_anyway "${ANYPROJ}"
 
-no_token="$(bash -c '
+if [[ -f "${ANYPROJ}/AGENTS.md.template" ]]; then
+  ok "copying anyway writes the template beside a matching file"
+else
+  ko "copying anyway writes the template beside a matching file" "no AGENTS.md.template"
+fi
+if [[ -f "${ANYPROJ}/CLAUDE.md" && ! -f "${ANYPROJ}/CLAUDE.md.template" ]]; then
+  ok "a file that was absent is created outright"
+else
+  ko "a file that was absent is created outright" "CLAUDE.md handling wrong"
+fi
+is "and the pair is recorded for the merge prompt" \
+  "${APPLIED_TEMPLATES[*]}" "AGENTS.md"
+
+# And the gate in front of it actually reaches the copy. Testing the helper
+# alone left this uncovered: a mutation that deleted the call from the gate
+# passed every assertion.
+GATEPROJ="${WORK}/gateproj"
+mkdir -p "${GATEPROJ}"
+cp "${TEMPLATE_DIR}/AGENTS.md" "${GATEPROJ}/AGENTS.md"
+_prompt_can_ask() { return 0; }
+GATE_ANSWER="no"
+ask_yes_no() { [[ "${GATE_ANSWER}" == "yes" ]]; }
+
+APPLIED_TEMPLATES=(); APPLIED_LEGACY=()
+offer_copy_anyway "${GATEPROJ}"
+if [[ -e "${GATEPROJ}/AGENTS.md.template" ]]; then
+  ko "declining the offer copies nothing" "wrote a template anyway"
+else
+  ok "declining the offer copies nothing"
+fi
+
+GATE_ANSWER="yes"
+APPLIED_TEMPLATES=(); APPLIED_LEGACY=()
+offer_copy_anyway "${GATEPROJ}"
+if [[ -f "${GATEPROJ}/AGENTS.md.template" ]]; then
+  ok "accepting the offer performs the copy"
+else
+  ko "accepting the offer performs the copy" "no template was written"
+fi
+
+ASSUME_DEFAULTS=1
+rm -f "${GATEPROJ}/AGENTS.md.template"
+offer_copy_anyway "${GATEPROJ}"
+if [[ -e "${GATEPROJ}/AGENTS.md.template" ]]; then
+  ko "a scripted run is never offered the copy" "wrote a template under -y"
+else
+  ok "a scripted run is never offered the copy"
+fi
+ASSUME_DEFAULTS=0
+
+# --- the cursor reveals a toggle's state ------------------------------------
+# The hint itself must not move as the selection travels — only the active note
+# appears — so the menu does not shuffle sideways under the cursor.
+draw_menu() {
+  bash -c '
+    set -euo pipefail
+    . "'"${REPO_ROOT}"'/lib/ui.sh"
+    . "'"${REPO_ROOT}"'/lib/prompt.sh"
+    UI_RICH=1; UI_DIM="<d>"; UI_RESET="<r>"; UI_GREEN="<g>"; UI_YELLOW="<y>"
+    UI_G_BAR="|"; UI_S_ON="*"; UI_S_OFF="o"
+    _prompt_draw_options '"$1"' \
+      "$(prompt_opt integ "Toggle Trellis block" "in AGENTS.md" ok on)" \
+      "$(prompt_opt quit  "Exit")"
+  ' 2>&1
+}
+selected_row="$(draw_menu 0)"
+other_row="$(draw_menu 1)"
+has   "the selected row appends its state"    "${selected_row}" "<g>on<r>"
+hasnt "an unselected row keeps its state off" "${other_row}"    "<g>on<r>"
+has   "the hint is there either way"          "${selected_row}" "<d>in AGENTS.md<r>"
+has   "and reads identically when not selected" "${other_row}"  "<d>in AGENTS.md<r>"
+
+# A hint with a level but no active note is still colored whole — that is how
+# the sync entry says at a glance whether it has work.
+sync_row="$(bash -c '
   set -euo pipefail
   . "'"${REPO_ROOT}"'/lib/ui.sh"
   . "'"${REPO_ROOT}"'/lib/prompt.sh"
@@ -417,7 +492,30 @@ no_token="$(bash -c '
   UI_G_BAR="|"; UI_S_ON="*"; UI_S_OFF="o"
   _prompt_draw_options 0 "$(prompt_opt sync "Sync template files" "2 to review" todo)"
 ' 2>&1)"
-has "a hint with no token is colored whole" "${no_token}" "<y>2 to review<r>"
+has "a note-less hint takes the level color whole" "${sync_row}" "<y>2 to review<r>"
+
+# A five-field record has to round-trip, and shorter ones must not change.
+_prompt_split "$(prompt_opt integ "Toggle Trellis block" "in AGENTS.md" ok on)"
+is "a five-field record keeps its hint"   "${PROMPT_HINT}"       "in AGENTS.md"
+is "a five-field record keeps its level"  "${PROMPT_HINT_LEVEL}" "ok"
+is "a five-field record keeps its note"   "${PROMPT_ACTIVE}"     "on"
+_prompt_split "$(prompt_opt sync "Sync template files" "2 to review" todo)"
+is "a four-field record has no note"      "${PROMPT_ACTIVE}"     ""
+is "a four-field record keeps its level"  "${PROMPT_HINT_LEVEL}" "todo"
+_prompt_split "$(prompt_opt trellis "Trellis management" "platforms, update, upgrade")"
+is "a three-field record is unchanged"    "${PROMPT_HINT}"       "platforms, update, upgrade"
+is "a three-field record has no note"     "${PROMPT_ACTIVE}"     ""
+
+# There is no cursor in the no-color list, so the state cannot be hidden behind
+# one: it shows on every row instead.
+plain_menu="$(NO_COLOR=1 bash -c '
+  set -euo pipefail
+  . "'"${REPO_ROOT}"'/lib/ui.sh"
+  . "'"${REPO_ROOT}"'/lib/prompt.sh"
+  _prompt_select_plain "Pick" 0 \
+    "$(prompt_opt integ "Toggle Trellis block" "in AGENTS.md" ok on)" </dev/null
+' 2>&1)"
+has "the no-color list still shows the state" "${plain_menu}" "in AGENTS.md (on)"
 
 # --- the dashboard leads with whatever has work -----------------------------
 # On a project already in sync, "Sync template files" can only repeat the card
@@ -442,13 +540,17 @@ SYNC_N_REVIEW=0
 
 # Each toggle reports the state the project is actually in.
 _prompt_split "$(dashboard_actions "${MENUPROJ}" "" "" | grep -F 'ccflow')"
-is "an absent workflow file reads off" "${PROMPT_HINT}" "(off) CC-Cowork-Workflow.md"
+is "an absent workflow file reads off"       "${PROMPT_ACTIVE}"     "off"
+is "and takes the off level"                 "${PROMPT_HINT_LEVEL}" "off"
+is "while its hint names what it toggles"    "${PROMPT_HINT}"       "CC-Cowork-Workflow.md"
 printf 'workflow\n' > "${MENUPROJ}/CC-Cowork-Workflow.md"
 printf '<INTEGRATION id="trellis">\nx\n</INTEGRATION>\n' > "${MENUPROJ}/AGENTS.md"
 _prompt_split "$(dashboard_actions "${MENUPROJ}" "" "" | grep -F 'ccflow')"
-is "a present workflow file reads on"  "${PROMPT_HINT}" "(on) CC-Cowork-Workflow.md"
+is "a present workflow file reads on"        "${PROMPT_ACTIVE}"     "on"
+is "and takes the ok level"                  "${PROMPT_HINT_LEVEL}" "ok"
 _prompt_split "$(dashboard_actions "${MENUPROJ}" "" "" | grep -F 'integ')"
-is "the Trellis block reports itself present" "${PROMPT_HINT}" "(on) in AGENTS.md"
+is "the Trellis block reports itself present" "${PROMPT_ACTIVE}"    "on"
+is "while its hint stays put"                 "${PROMPT_HINT}"      "in AGENTS.md"
 
 # --- every ui_* the tool calls has to exist ---------------------------------
 # ui_info did not. lib/ui.sh defines ui_log, and eleven call sites across

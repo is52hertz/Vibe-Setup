@@ -27,18 +27,25 @@
 # ASCII unit separator: not something a label will ever contain.
 PROMPT_US=$'\037'
 
-# Build one option record: prompt_opt <value> <label> [hint] [hint_level]
+# Build one option record:
+#   prompt_opt <value> <label> [hint] [hint_level] [active_note]
 #
-# hint_level is one of lib/ui.sh's state levels (ok / info / todo / off). It
-# colors the hint, so a menu entry can say at a glance whether picking it has
-# anything to do. Omitted, the hint stays dim as it always was — and a
-# three-field record still splits correctly, so no existing caller changes.
+# hint_level is one of lib/ui.sh's state levels (ok / info / todo / off) and
+# colors the state-bearing part of the row. active_note is shown only while the
+# row is under the cursor — a toggle's current on/off, revealed exactly when the
+# user is about to act on it.
+#
+# Both are optional, and a two- or three-field record still splits exactly as it
+# always did, so no existing caller changes.
 prompt_opt() {
   local record=""
 
   record="$(printf '%s%s%s%s%s' "$1" "${PROMPT_US}" "$2" "${PROMPT_US}" "${3:-}")"
-  if [[ -n "${4:-}" ]]; then
-    record="${record}${PROMPT_US}$4"
+  if [[ -n "${4:-}" || -n "${5:-}" ]]; then
+    record="${record}${PROMPT_US}${4:-}"
+  fi
+  if [[ -n "${5:-}" ]]; then
+    record="${record}${PROMPT_US}$5"
   fi
   printf '%s' "${record}"
 }
@@ -50,6 +57,7 @@ PROMPT_VALUE=""
 PROMPT_LABEL=""
 PROMPT_HINT=""
 PROMPT_HINT_LEVEL=""
+PROMPT_ACTIVE=""
 _prompt_split() {
   local record="$1"
   local rest=""
@@ -59,39 +67,45 @@ _prompt_split() {
   PROMPT_LABEL="${rest%%${PROMPT_US}*}"
   rest="${rest#*${PROMPT_US}}"
   PROMPT_HINT="${rest%%${PROMPT_US}*}"
+  PROMPT_HINT_LEVEL=""
+  PROMPT_ACTIVE=""
   if [[ "${rest}" == *"${PROMPT_US}"* ]]; then
-    PROMPT_HINT_LEVEL="${rest#*${PROMPT_US}}"
-  else
-    PROMPT_HINT_LEVEL=""
+    rest="${rest#*${PROMPT_US}}"
+    PROMPT_HINT_LEVEL="${rest%%${PROMPT_US}*}"
+    if [[ "${rest}" == *"${PROMPT_US}"* ]]; then
+      PROMPT_ACTIVE="${rest#*${PROMPT_US}}"
+    fi
   fi
 }
 
 # Draw the hint column for the option just split.
 #
-# A hint may open with a state token in parentheses — "(on) in AGENTS.md". That
-# token is the state and takes the level's color, the rest is context and stays
-# dim: the same split ui_kv_state makes in a status row, so a toggle's current
-# state is visible in the menu itself rather than only in the card above it.
-# That is what stops a mis-keyed Enter from flipping something the user meant to
-# leave alone. A hint with a level but no token takes the color whole; a hint
-# with no level at all stays dim, as every record predating the level looked.
+# The hint itself does not move: the same dim text whether or not the row is
+# under the cursor, so nothing shifts sideways as the selection travels. What
+# the cursor adds is the active note — a toggle's current on/off — appended in
+# the level's color. A toggle is the one kind of entry where Enter changes
+# something, so its state appears exactly when the user is about to act on it,
+# and the rest of the time the menu stays quiet.
+#
+# A hint carrying a level but no active note is colored whole, which is how the
+# sync entry says at a glance whether it has work. A hint with no level at all
+# stays dim, as every record predating the level looked.
+# Usage: _prompt_draw_hint <is_selected>
 _prompt_draw_hint() {
-  local color="" token="" rest=""
+  local is_selected="${1:-0}"
 
-  if [[ -z "${PROMPT_HINT_LEVEL}" ]]; then
-    printf '   %s%s%s' "${UI_DIM}" "${PROMPT_HINT}" "${UI_RESET}" >&2
-    return
+  if [[ -n "${PROMPT_HINT}" ]]; then
+    if [[ -n "${PROMPT_HINT_LEVEL}" && -z "${PROMPT_ACTIVE}" ]]; then
+      printf '   %s%s%s' "$(_ui_state_color "${PROMPT_HINT_LEVEL}")" "${PROMPT_HINT}" "${UI_RESET}" >&2
+    else
+      printf '   %s%s%s' "${UI_DIM}" "${PROMPT_HINT}" "${UI_RESET}" >&2
+    fi
   fi
 
-  color="$(_ui_state_color "${PROMPT_HINT_LEVEL}")"
-  if [[ "${PROMPT_HINT}" == "("*") "* ]]; then
-    token="${PROMPT_HINT%%) *})"
-    rest="${PROMPT_HINT#*) }"
-    printf '   %s%s%s %s%s%s' \
-      "${color}" "${token}" "${UI_RESET}" "${UI_DIM}" "${rest}" "${UI_RESET}" >&2
-    return
+  if [[ "${is_selected}" -eq 1 && -n "${PROMPT_ACTIVE}" ]]; then
+    printf '  %s%s%s' \
+      "$(_ui_state_color "${PROMPT_HINT_LEVEL:-off}")" "${PROMPT_ACTIVE}" "${UI_RESET}" >&2
   fi
-  printf '   %s%s%s' "${color}" "${PROMPT_HINT}" "${UI_RESET}" >&2
 }
 
 # Is there a terminal on stdin to read an answer from?
@@ -185,8 +199,12 @@ _prompt_draw_options() {
         "${UI_DIM}" "${UI_G_BAR}" "${UI_RESET}" \
         "${UI_DIM}" "${UI_S_OFF}" "${label}" "${UI_RESET}" >&2
     fi
-    if [[ -n "${PROMPT_HINT}" ]]; then
-      _prompt_draw_hint
+    if [[ -n "${PROMPT_HINT}" || -n "${PROMPT_ACTIVE}" ]]; then
+      if [[ "${i}" -eq "${selected}" ]]; then
+        _prompt_draw_hint 1
+      else
+        _prompt_draw_hint 0
+      fi
     fi
     printf '\n' >&2
     i=$(( i + 1 ))
@@ -200,7 +218,7 @@ _prompt_select_plain() {
   local selected="$2"
   shift 2
   local -a options=("$@")
-  local record="" answer="" i=0
+  local record="" answer="" i=0 hint=""
   local count="${#options[@]}"
   local default_value=""
 
@@ -209,10 +227,17 @@ _prompt_select_plain() {
 
   printf '%s\n' "${question}" >&2
   i=0
+  # There is no cursor in a numbered list, so nothing can reveal the active
+  # note on selection: it is shown on every row instead. The state must not be
+  # unavailable just because the terminal cannot draw.
   for record in "${options[@]}"; do
     _prompt_split "${record}"
-    if [[ -n "${PROMPT_HINT}" ]]; then
-      printf '  [%d] %-10s %s\n' "$(( i + 1 ))" "${PROMPT_VALUE}" "${PROMPT_HINT}" >&2
+    hint="${PROMPT_HINT}"
+    if [[ -n "${PROMPT_ACTIVE}" ]]; then
+      hint="${hint:+${hint} }(${PROMPT_ACTIVE})"
+    fi
+    if [[ -n "${hint}" ]]; then
+      printf '  [%d] %-10s %s\n' "$(( i + 1 ))" "${PROMPT_VALUE}" "${hint}" >&2
     else
       printf '  [%d] %s\n' "$(( i + 1 ))" "${PROMPT_VALUE}" >&2
     fi
@@ -280,8 +305,12 @@ _prompt_draw_checks() {
         "${UI_DIM}" "${UI_G_BAR}" "${UI_RESET}" "${mark}" \
         "${UI_DIM}" "${label}" "${UI_RESET}" >&2
     fi
-    if [[ -n "${PROMPT_HINT}" ]]; then
-      _prompt_draw_hint
+    if [[ -n "${PROMPT_HINT}" || -n "${PROMPT_ACTIVE}" ]]; then
+      if [[ "${i}" -eq "${cursor}" ]]; then
+        _prompt_draw_hint 1
+      else
+        _prompt_draw_hint 0
+      fi
     fi
     printf '\n' >&2
     i=$(( i + 1 ))

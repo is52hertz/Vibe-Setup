@@ -416,6 +416,42 @@ choose_apply_files() {
   done
 }
 
+# Offer the blunt copy when the plan found nothing to do — the mirror of the
+# Trellis version gate in lib/trellis.sh. Both say the same thing: the useful
+# work would be a no-op, here is why, do you want it anyway. Deciding silently
+# for the user is what this replaces.
+#
+# Only worth asking where someone can answer; a scripted run takes the default
+# (no) and says nothing more. The check goes through _prompt_can_ask rather than
+# an inline `-t 0` so a test can reach the branch at all.
+offer_copy_anyway() {
+  local project_dir="$1"
+
+  if [[ "${ASSUME_DEFAULTS}" -eq 1 ]] || ! _prompt_can_ask; then
+    return 0
+  fi
+  ui_info "Copying anyway would place a fresh copy of each template beside"
+  ui_info "files that already match it. Say yes if the plan has it wrong."
+  ask_yes_no "Copy the templates anyway?" "no" || return 0
+  copy_all_templates_anyway "${project_dir}"
+}
+
+# Copy every managed file the blunt way, ignoring the merge verdict entirely:
+# each destination that already exists gets its <name>.template, exactly as
+# --on-exists template would. The plan says there is nothing to do and is very
+# nearly always right; "nearly" is why this exists. A template edited by hand,
+# or a merge base that has drifted, is invisible to a hash comparison, and this
+# is the way out that does not require re-running the tool with a flag.
+copy_all_templates_anyway() {
+  local project_dir="$1"
+  local rel=""
+
+  for rel in "${TEMPLATE_FILES[@]}"; do
+    [[ -f "${TEMPLATE_DIR}/${rel}" ]] || continue
+    copy_template_file "${rel}" "${project_dir}/${rel}" "template"
+  done
+}
+
 # Sync the selected files.
 #
 # The default path is the three-way merge in lib/sync.sh: files and blocks that
@@ -430,12 +466,13 @@ apply_templates() {
   choose_apply_files "${project_dir}"
 
   if [[ "${#APPLY_SELECTED[@]}" -eq 0 ]]; then
-    if [[ -z "${ON_EXISTS}" ]]; then
-      sync_reset
-      ui_ok "Everything is up to date — nothing to sync."
-    else
+    if [[ -n "${ON_EXISTS}" ]]; then
       info "no files selected; nothing to apply"
+      return
     fi
+    sync_reset
+    ui_ok "Everything is up to date — nothing to sync."
+    offer_copy_anyway "${project_dir}"
     return
   fi
 
@@ -880,24 +917,27 @@ dashboard_actions() {
   local project_dir="$1"
   local sync_state="${2:-}"
   local sync_level="${3:-}"
-  local cc_state="(off) CC-Cowork-Workflow.md" cc_level="off"
-  local integ_state="(off) in AGENTS.md"       integ_level="off"
+  # The hint says WHAT a toggle acts on and never moves; the cursor reveals the
+  # state it is currently in. See _prompt_draw_hint for why the state is
+  # appended on selection rather than sitting in the hint permanently.
+  local cc_hint="CC-Cowork-Workflow.md" cc_level="off" cc_active="off"
+  local integ_hint="in AGENTS.md"       integ_level="off" integ_active="off"
 
   if [[ -f "${project_dir}/CC-Cowork-Workflow.md" ]]; then
-    cc_state="(on) CC-Cowork-Workflow.md"
     cc_level="ok"
+    cc_active="on"
   fi
   if has_block "${project_dir}/AGENTS.md" "INTEGRATION" "trellis"; then
-    integ_state="(on) in AGENTS.md"
     integ_level="ok"
+    integ_active="on"
   fi
 
   if sync_has_work; then
     prompt_opt sync "Sync template files" "${sync_state}" "${sync_level}"; printf '\n'
   fi
   prompt_opt trellis "Trellis management"   "platforms, update, upgrade"; printf '\n'
-  prompt_opt ccflow  "Toggle CC-Workflow"   "${cc_state}"    "${cc_level}"; printf '\n'
-  prompt_opt integ   "Toggle Trellis block" "${integ_state}" "${integ_level}"; printf '\n'
+  prompt_opt ccflow  "Toggle CC-Workflow"   "${cc_hint}"    "${cc_level}"    "${cc_active}"; printf '\n'
+  prompt_opt integ   "Toggle Trellis block" "${integ_hint}" "${integ_level}" "${integ_active}"; printf '\n'
   if ! sync_has_work; then
     prompt_opt sync "Sync template files" "${sync_state}" "${sync_level}"; printf '\n'
   fi
