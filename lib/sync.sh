@@ -77,6 +77,12 @@ block_is_optional() {
   esac
 }
 
+# "block" or "blocks" for a count. Spelling it out beats "block(s)", which
+# reads badly once the detail is wrapped in parentheses of its own.
+_sync_blocks_noun() {
+  if [[ "$1" -eq 1 ]]; then printf 'block\n'; else printf 'blocks\n'; fi
+}
+
 # Human name for a block: "<TAG>" or "<TAG id>".
 block_label() {
   if [[ -n "${2:-}" ]]; then
@@ -209,13 +215,13 @@ _sync_blocks() {
 
   if [[ "${reviewed}" -gt 0 ]]; then
     SYNC_LAST_STATE="review"
-    SYNC_LAST_NOTE="${reviewed} block(s)"
+    SYNC_LAST_NOTE="${reviewed} $(_sync_blocks_noun "${reviewed}")"
     SYNC_REVIEW_BLOCKS+=("$(printf '%s\t%s' "${rel}" "${names% }")")
     return 0
   fi
   if [[ "${forwarded}" -gt 0 ]]; then
     SYNC_LAST_STATE="update"
-    SYNC_LAST_NOTE="${forwarded} block(s)"
+    SYNC_LAST_NOTE="${forwarded} $(_sync_blocks_noun "${forwarded}")"
     return 0
   fi
   SYNC_LAST_STATE="same"
@@ -366,9 +372,35 @@ sync_run() {
   return 0
 }
 
+# The lib/ui.sh state level for a plan state, so the file list, the sync report
+# and the dashboard menu all color the same state the same way.
+# Usage: sync_state_level <state>
+sync_state_level() {
+  case "$1" in
+    new)           printf 'ok\n' ;;
+    update)        printf 'info\n' ;;
+    review|legacy) printf 'todo\n' ;;
+    *)             printf 'off\n' ;;
+  esac
+}
+
 # True when the plan has nothing for the user to act on or wait for.
 sync_has_work() {
   (( SYNC_N_NEW + SYNC_N_UPDATE + SYNC_N_REVIEW + SYNC_N_LEGACY > 0 ))
+}
+
+# The state level for the menu hint: nothing to do reads as off, anything
+# needing a decision as todo, plain work as info.
+sync_summary_level() {
+  if ! sync_has_work; then
+    printf 'off\n'
+    return
+  fi
+  if [[ "${SYNC_N_REVIEW}" -gt 0 || "${SYNC_N_LEGACY}" -gt 0 ]]; then
+    printf 'todo\n'
+    return
+  fi
+  printf 'info\n'
 }
 
 # A one-line summary of the last plan, for the dashboard menu hint.
@@ -427,8 +459,7 @@ sync_report() {
         ;;
       legacy) label="needs format conversion" ;;
     esac
-    if [[ -n "${note}" ]]; then label="${label} — ${note}"; fi
-    ui_kv "${rel}" "${label}" "${UI_PATH_WIDTH}"
+    ui_kv_state "${rel}" "$(sync_state_level "${state}")" "${label}" "${note}" "${UI_PATH_WIDTH}"
   done
   return 0
 }

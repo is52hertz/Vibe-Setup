@@ -228,6 +228,72 @@ ui_kv() {
     "${UI_DIM}" "$(_ui_cell "${label}" "${width}")" "${UI_RESET}" "${value}" >&2
 }
 
+# The semantic state levels, and the color each one reads as. Color encodes
+# what KIND of state a value is, never what the word happens to say, so the
+# vocabulary can grow without the palette drifting:
+#
+#   ok    green   ready, in use, current            Active, Initialized
+#   info  cyan    a neutral identifier, not a state Modern, a version, a list
+#   todo  yellow  works, but there is work to do    Legacy, Not initialized
+#   off   dim     deliberately off, or absent       Disabled, None
+#   bad   red     broken or blocking                Missing, CLI not installed
+#
+# "off" is dim rather than red on purpose. CC-Workflow is off in most projects
+# by design, and painting the normal case red spends the one color that should
+# mean "act now" — after a few runs the user stops seeing it, and the real
+# failures stop landing. Red stays scarce.
+#
+# The color is redundant with the word itself in every row, so nothing is lost
+# to a color-blind reader or a piped log.
+_ui_state_color() {
+  case "$1" in
+    ok)    printf '%s' "${UI_GREEN}" ;;
+    info)  printf '%s' "${UI_CYAN}" ;;
+    todo)  printf '%s' "${UI_YELLOW}" ;;
+    bad)   printf '%s' "${UI_RED}" ;;
+    off|*) printf '%s' "${UI_DIM}" ;;
+  esac
+}
+
+# A status row whose value is a state word plus optional detail:
+#
+#   Trellis          Active (Project v0.6.16 / CLI v0.6.16)
+#                    ^^^^^^ level color      ^^^^^^^^^^^^^^ dim
+#
+# Splitting the two is what gives a dense card a reading order: the eye lands on
+# the state and the version numbers recede. A row rendered as one flat color —
+# which is what ui_kv alone could do — has no such order, and a whole card of
+# them is the "grey and white wall" this replaces.
+#
+# Plain mode renders exactly what ui_kv would have printed, "<state> (<detail>)",
+# byte for byte, so anything grepping the output is unaffected.
+# Usage: ui_kv_state <label> <level> <state> [detail] [label_width]
+ui_kv_state() {
+  local label="$1"
+  local level="$2"
+  local state="$3"
+  local detail="${4:-}"
+  local width="${5:-${UI_LABEL_WIDTH}}"
+  local value=""
+
+  if [[ -n "${detail}" ]]; then
+    value="${state} (${detail})"
+  else
+    value="${state}"
+  fi
+
+  if [[ "${UI_RICH}" -ne 1 ]]; then
+    ui_kv "${label}" "${value}" "${width}"
+    return
+  fi
+
+  value="$(_ui_state_color "${level}")${state}${UI_RESET}"
+  if [[ -n "${detail}" ]]; then
+    value="${value} ${UI_DIM}(${detail})${UI_RESET}"
+  fi
+  ui_kv "${label}" "${value}" "${width}"
+}
+
 # The four message levels. Plain mode keeps the exact wording the tool has always
 # printed — "warning: " and "error: " included — so nothing that greps the output
 # has to change.

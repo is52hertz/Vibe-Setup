@@ -480,7 +480,7 @@ vi "${d}" --apply -y --template-dir "${t}"
 has "a real conflict writes the .template pair"  "AGENTS.md.template"
 has "a real conflict prints the merge prompt"    "suggested prompt for your AI agent"
 has "the prompt narrows the agent to the block"  "only these blocks are still open: <CORE_RULES>"
-has "the report names the block, not the file"   "needs review — <CORE_RULES>"
+has "the report names the block, not the file"   "needs review (<CORE_RULES>)"
 if grep -qF "MY OWN RULE" "${d}/AGENTS.md"; then
   ok "a conflicted block is left for me, not overwritten"
 else

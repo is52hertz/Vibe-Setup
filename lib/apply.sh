@@ -233,26 +233,40 @@ select_from_files_flag() {
   done
 }
 
-# The menu label for one planned file, e.g. "already exists — needs review (2
-# block(s))". Kept next to the plan states so the checklist, the summary and the
-# end-of-run report can never describe the same file differently.
+# The menu label for one planned file, as "word<TAB>detail" — e.g.
+# "already exists — needs review<TAB>2 blocks". Two consumers want it split
+# differently: the printed list colors the word and dims the detail, while the
+# interactive checklist wants one plain string for its hint column. Emitting one
+# record keeps the wording in a single place so they cannot drift apart.
 # Usage: sync_menu_label <relative_path> <state> <note>
 sync_menu_label() {
   local rel="$1" state="$2" note="${3:-}"
   local label=""
 
   case "${state}" in
-    new)    printf 'new -> creates %s\n' "${rel}"; return ;;
+    new)    printf 'new -> creates %s\t\n' "${rel}"; return ;;
     same)   label="up to date" ;;
     update) label="already exists — will refresh" ;;
     review) label="already exists — needs review" ;;
     legacy) label="already exists — needs format conversion" ;;
     *)      label="${state}" ;;
   esac
-  if [[ -n "${note}" ]]; then
-    printf '%s (%s)\n' "${label}" "${note}"
+  printf '%s\t%s\n' "${label}" "${note}"
+}
+
+# Flatten a sync_menu_label record back into one plain string, for the checklist
+# hint column, which has no room for two colors.
+sync_menu_label_flat() {
+  local record=""
+  local word="" detail=""
+
+  record="$(sync_menu_label "$@")"
+  word="${record%%$'\t'*}"
+  detail="${record#*$'\t'}"
+  if [[ -n "${detail}" ]]; then
+    printf '%s (%s)\n' "${word}" "${detail}"
   else
-    printf '%s\n' "${label}"
+    printf '%s\n' "${word}"
   fi
 }
 
@@ -264,7 +278,7 @@ sync_menu_label() {
 # overwrite/template/skip policy by name, still labels files by mere existence.
 choose_apply_files() {
   local project_dir="$1"
-  local rel="" status="" label="" input="" token="" ok=""
+  local rel="" status="" label="" input="" token="" ok="" record="" word="" detail=""
   local -a available=()
   local -a labels=()
   local -a tokens=()
@@ -309,22 +323,31 @@ choose_apply_files() {
     while [[ "${index}" -lt "${#SYNC_REL[@]}" ]]; do
       rel="${SYNC_REL[${index}]}"
       status="${SYNC_STATE[${index}]}"
-      label="$(sync_menu_label "${rel}" "${status}" "${SYNC_NOTE[${index}]}")"
+      record="$(sync_menu_label "${rel}" "${status}" "${SYNC_NOTE[${index}]}")"
+      word="${record%%$'\t'*}"
+      detail="${record#*$'\t'}"
+      label="$(sync_menu_label_flat "${rel}" "${status}" "${SYNC_NOTE[${index}]}")"
       index=$(( index + 1 ))
 
       case "${status}" in
         missing-source)
-          if [[ "${listing}" -eq 1 ]]; then ui_kv "${rel}" "not in this set" "${UI_PATH_WIDTH}"; fi
+          if [[ "${listing}" -eq 1 ]]; then
+            ui_kv_state "${rel}" "off" "not in this set" "" "${UI_PATH_WIDTH}"
+          fi
           continue
           ;;
         same)
-          if [[ "${listing}" -eq 1 ]]; then ui_kv "${rel}" "${label}" "${UI_PATH_WIDTH}"; fi
+          if [[ "${listing}" -eq 1 ]]; then
+            ui_kv_state "${rel}" "off" "${word}" "${detail}" "${UI_PATH_WIDTH}"
+          fi
           continue
           ;;
       esac
       available+=("${rel}")
       labels+=("${label}")
-      if [[ "${listing}" -eq 1 ]]; then ui_kv "${rel}" "${label}" "${UI_PATH_WIDTH}"; fi
+      if [[ "${listing}" -eq 1 ]]; then
+        ui_kv_state "${rel}" "$(sync_state_level "${status}")" "${word}" "${detail}" "${UI_PATH_WIDTH}"
+      fi
     done
   fi
 
@@ -520,15 +543,21 @@ suggest_template_merges() {
 
 show_project_diagnostics() {
   local project_dir="$1"
-  local git_status="Not initialized"
-  local branch=""
-  local trellis_status="Not configured"
-  local trellis_tools="None"
-  local cc_workflow_status="Disabled"
-  local agents_status="Missing"
-  local claude_status="Missing"
-  local tracked_status=""
-  local tracked_version=""
+  # Each row is a (level, state word, detail) triple rather than one flat
+  # string: lib/ui.sh colors the state and dims the detail, which is what gives
+  # a card this dense a reading order.
+  local git_level="off"     git_state="Not initialized"   git_detail=""
+  local trellis_level="off" trellis_state="Not configured" trellis_detail=""
+  local plat_level="off"    plat_state="None"             plat_detail=""
+  local cc_level="off"      cc_state="Disabled"           cc_detail=""
+  # "Missing" is dim, not red: on a directory being seeded for the first time
+  # both of these are absent and the sync is about to create them, so red here
+  # would fire on the most ordinary run there is. The action shows up green in
+  # the file list below ("new -> creates AGENTS.md"), which is where it belongs.
+  local agents_level="off"  agents_state="Missing"        agents_detail=""
+  local claude_level="off"  claude_state="Missing"        claude_detail=""
+  local tracked_level="info" tracked_state="v${VIBE_INIT_VERSION}" tracked_detail=""
+  local branch="" p_ver="" c_ver="" platforms="" tracked_version=""
 
   # Git check. A repository with no commits yet is the normal state right after
   # vibe-init scaffolds one, and there `rev-parse --abbrev-ref HEAD` prints
@@ -543,61 +572,85 @@ show_project_diagnostics() {
         branch="unknown"
       fi
     fi
-    git_status="Initialized (${branch})"
+    git_level="ok"
+    git_state="Initialized"
+    git_detail="${branch}"
   fi
 
   # Trellis check
-  local p_ver c_ver
   c_ver="$(trellis_cli_version || echo "none")"
   if trellis_has_project "${project_dir}"; then
     p_ver="$(trellis_project_version "${project_dir}" || echo "unknown")"
-    trellis_status="Active (Project v${p_ver} / CLI v${c_ver})"
-    trellis_tools="$(trellis_configured_platforms "${project_dir}")"
+    trellis_level="ok"
+    trellis_state="Active"
+    trellis_detail="Project v${p_ver} / CLI v${c_ver}"
+
+    platforms="$(trellis_configured_platforms "${project_dir}")"
+    if [[ -n "${platforms}" && "${platforms}" != "None" ]]; then
+      plat_level="info"
+      # The list can carry a trailing "(…)" note about which other tools read
+      # the same files. That is detail, not state, so it goes dim with the rest.
+      case "${platforms}" in
+        *\ \(*)
+          plat_state="${platforms%% (*}"
+          plat_detail="${platforms#* (}"
+          plat_detail="${plat_detail%)}"
+          ;;
+        *)
+          plat_state="${platforms}"
+          ;;
+      esac
+    fi
   elif [[ "${c_ver}" != "none" ]]; then
-    trellis_status="Not initialized (CLI v${c_ver} ready)"
+    trellis_level="todo"
+    trellis_state="Not initialized"
+    trellis_detail="CLI v${c_ver} ready"
   else
-    trellis_status="CLI not installed"
+    trellis_level="bad"
+    trellis_state="CLI not installed"
   fi
 
   # CC-Workflow check
   if [[ -f "${project_dir}/CC-Cowork-Workflow.md" ]]; then
-    cc_workflow_status="Active"
+    cc_level="ok"
+    cc_state="Active"
   fi
 
-  # AGENTS.md check. A legacy file has no <TAG> blocks for the engine to edit;
-  # the conversion path is the ordinary sync (it writes AGENTS.md.template)
-  # plus the end-of-run prompt for the project's AI agent.
+  # AGENTS.md / CLAUDE.md format. A legacy file has no <TAG> blocks for the
+  # engine to edit; the conversion path is the ordinary sync (it writes the
+  # .template) plus the end-of-run prompt for the project's AI agent.
   case "$(file_format "${project_dir}/AGENTS.md" "CORE_RULES")" in
-    modern) agents_status="Modern (<TAG> format)" ;;
-    legacy) agents_status="Legacy (pre-<TAG> format)" ;;
+    modern) agents_level="info"; agents_state="Modern"; agents_detail="<TAG> format" ;;
+    legacy) agents_level="todo"; agents_state="Legacy"; agents_detail="pre-<TAG> format" ;;
   esac
   case "$(file_format "${project_dir}/CLAUDE.md" "CLAUDE_BASE")" in
-    modern) claude_status="Modern (<TAG> format)" ;;
-    legacy) claude_status="Legacy (pre-<TAG> format)" ;;
+    modern) claude_level="info"; claude_state="Modern"; claude_detail="<TAG> format" ;;
+    legacy) claude_level="todo"; claude_state="Legacy"; claude_detail="pre-<TAG> format" ;;
   esac
 
   # Whether this project carries a .vibe-init manifest decides how much the sync
   # can know: without one there is no merge base, so every existing file has to
-  # be treated as a possible conflict. Saying so up front explains why a first
-  # run on an old project is noisier than every run after it.
+  # be treated as a possible conflict. The version turns todo-colored to say so
+  # up front — it explains why a first run on an old project is noisy.
   if state_is_tracked "${project_dir}"; then
     tracked_version="$(state_get "${project_dir}" version)"
     [[ -n "${tracked_version}" ]] || tracked_version="unknown"
-    tracked_status="v${VIBE_INIT_VERSION} (project tracked at v${tracked_version})"
+    tracked_detail="project tracked at v${tracked_version}"
   else
-    tracked_status="v${VIBE_INIT_VERSION} (project not tracked yet)"
+    tracked_level="todo"
+    tracked_detail="project not tracked yet"
   fi
 
   ui_section "Project environment"
-  ui_kv "vibe-init"     "${tracked_status}"
-  ui_kv "Git repo"      "${git_status}"
-  ui_kv "Trellis"       "${trellis_status}"
-  ui_kv "Platforms"     "${trellis_tools}"
-  ui_kv "CC-Workflow"   "${cc_workflow_status}"
-  ui_kv "AGENTS.md"     "${agents_status}"
-  ui_kv "CLAUDE.md"     "${claude_status}"
-  if [[ "${agents_status}" == "Legacy"* || "${claude_status}" == "Legacy"* ]]; then
-    ui_kv "Format upgrade" "sync once, then follow the printed agent prompt"
+  ui_kv_state "vibe-init"   "${tracked_level}" "${tracked_state}" "${tracked_detail}"
+  ui_kv_state "Git repo"    "${git_level}"     "${git_state}"     "${git_detail}"
+  ui_kv_state "Trellis"     "${trellis_level}" "${trellis_state}" "${trellis_detail}"
+  ui_kv_state "Platforms"   "${plat_level}"    "${plat_state}"    "${plat_detail}"
+  ui_kv_state "CC-Workflow" "${cc_level}"      "${cc_state}"      "${cc_detail}"
+  ui_kv_state "AGENTS.md"   "${agents_level}"  "${agents_state}"  "${agents_detail}"
+  ui_kv_state "CLAUDE.md"   "${claude_level}"  "${claude_state}"  "${claude_detail}"
+  if [[ "${agents_level}" == "todo" || "${claude_level}" == "todo" ]]; then
+    ui_kv_state "Format upgrade" "todo" "sync once, then follow the printed agent prompt"
   fi
 }
 
@@ -811,6 +864,7 @@ orchestrator_dashboard() {
   local choice=""
   local cc_state=""
   local sync_state=""
+  local sync_level=""
   local -a actions=()
 
   # Non-interactive (-y, no TTY) or driven by an explicit --files / --on-exists
@@ -840,15 +894,17 @@ orchestrator_dashboard() {
     # do instead of inviting the user into a run that has nothing to change.
     if [[ -n "${ON_EXISTS}" ]]; then
       sync_state="${TEMPLATE_SET_LABEL}"
+      sync_level=""
     else
       sync_run "${project_dir}" plan "${TEMPLATE_FILES[@]}"
       sync_state="$(sync_summary)"
+      sync_level="$(sync_summary_level)"
     fi
 
     # Built up in an array rather than nested inline: bash 3.2 mis-parses a
     # command substitution that closes immediately inside another one.
     actions=()
-    actions+=("$(prompt_opt sync    "Sync template files"      "${sync_state}")")
+    actions+=("$(prompt_opt sync    "Sync template files"      "${sync_state}" "${sync_level}")")
     actions+=("$(prompt_opt trellis "Trellis management"       "platforms, update, upgrade")")
     actions+=("$(prompt_opt ccflow  "Toggle CC-Workflow"       "${cc_state}")")
     actions+=("$(prompt_opt integ   "Toggle Trellis block"     "in AGENTS.md")")

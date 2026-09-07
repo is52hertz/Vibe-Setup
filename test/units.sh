@@ -291,6 +291,65 @@ is "a record round-trips its value" "${PROMPT_VALUE}" "--claude --codex"
 is "a record round-trips its label" "${PROMPT_LABEL}" "Claude Code + Codex"
 is "a record round-trips its hint"  "${PROMPT_HINT}"  "two: platforms"
 
+# --- the semantic state palette --------------------------------------------
+# Color encodes what kind of state a value is, not what the word says. The one
+# that matters most is "off": deliberately-off and absent states are dim, not
+# red, because CC-Workflow is off in most projects by design and a card that
+# cries wolf on the normal case spends the color that should mean "act now".
+is "ok reads green"    "$(UI_GREEN=G  _ui_state_color ok)"   "G"
+is "info reads cyan"   "$(UI_CYAN=C   _ui_state_color info)" "C"
+is "todo reads yellow" "$(UI_YELLOW=Y _ui_state_color todo)" "Y"
+is "bad reads red"     "$(UI_RED=R    _ui_state_color bad)"  "R"
+is "off reads dim"     "$(UI_DIM=D    _ui_state_color off)"  "D"
+is "an unknown level falls back to dim" "$(UI_DIM=D _ui_state_color nonsense)" "D"
+
+# Plain mode has to render exactly what ui_kv would have printed. Everything
+# that greps this tool's output — the whole dry-run suite included — reads that
+# string, so the colored version may not change a single byte of it.
+plain_row="$(NO_COLOR=1 bash -c '
+  set -euo pipefail
+  . "'"${REPO_ROOT}"'/lib/ui.sh"
+  ui_kv_state "Trellis" ok "Active" "Project v1 / CLI v2"
+  ui_kv_state "CC-Workflow" off "Disabled"
+' 2>&1)"
+has "a plain state row keeps the state and detail together" "${plain_row}" "Active (Project v1 / CLI v2)"
+has "a plain state row with no detail is just the word"     "${plain_row}" "Disabled"
+hasnt "a plain state row carries no parens of its own"      "${plain_row}" "Disabled ("
+
+rich_row="$(bash -c '
+  set -euo pipefail
+  . "'"${REPO_ROOT}"'/lib/ui.sh"
+  UI_RICH=1; UI_DIM="<d>"; UI_RESET="<r>"; UI_GREEN="<g>"; UI_G_BAR="|"
+  ui_kv_state "Trellis" ok "Active" "Project v1 / CLI v2"
+' 2>&1)"
+has "the state word carries the color"  "${rich_row}" "<g>Active<r>"
+has "the detail beside it is dimmed"    "${rich_row}" "<d>(Project v1 / CLI v2)<r>"
+
+# --- option records carry an optional hint level ----------------------------
+# The fourth field is new; a three-field record has to keep splitting exactly as
+# it did, because every other caller in the tool still builds one.
+_prompt_split "$(prompt_opt sync "Sync template files" "2 to review" todo)"
+is "a four-field record keeps its hint"  "${PROMPT_HINT}"       "2 to review"
+is "a four-field record keeps its level" "${PROMPT_HINT_LEVEL}" "todo"
+_prompt_split "$(prompt_opt quit "Exit" "")"
+is "a three-field record still splits"   "${PROMPT_LABEL}"      "Exit"
+is "a record with no level reports none" "${PROMPT_HINT_LEVEL}" ""
+_prompt_split "$(prompt_opt trellis "Trellis management" "platforms, update, upgrade")"
+is "a legacy hint survives untouched"    "${PROMPT_HINT}"       "platforms, update, upgrade"
+is "a legacy hint stays level-less"      "${PROMPT_HINT_LEVEL}" ""
+
+# --- plan states map to one palette -----------------------------------------
+# The file list, the sync report and the menu hint all read the same plan, so
+# they have to color the same state the same way.
+is "a new file reads ok"        "$(sync_state_level new)"    "ok"
+is "a refresh reads info"       "$(sync_state_level update)" "info"
+is "a review reads todo"        "$(sync_state_level review)" "todo"
+is "a conversion reads todo"    "$(sync_state_level legacy)" "todo"
+is "an up-to-date file reads off" "$(sync_state_level same)" "off"
+
+is "one block is singular" "$(_sync_blocks_noun 1)" "block"
+is "two blocks are plural" "$(_sync_blocks_noun 2)" "blocks"
+
 # --- every ui_* the tool calls has to exist ---------------------------------
 # ui_info did not. lib/ui.sh defines ui_log, and eleven call sites across
 # lib/apply.sh and lib/trellis.sh asked for ui_info instead, so both dashboard

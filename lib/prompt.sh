@@ -27,9 +27,20 @@
 # ASCII unit separator: not something a label will ever contain.
 PROMPT_US=$'\037'
 
-# Build one option record: prompt_opt <value> <label> [hint]
+# Build one option record: prompt_opt <value> <label> [hint] [hint_level]
+#
+# hint_level is one of lib/ui.sh's state levels (ok / info / todo / off). It
+# colors the hint, so a menu entry can say at a glance whether picking it has
+# anything to do. Omitted, the hint stays dim as it always was — and a
+# three-field record still splits correctly, so no existing caller changes.
 prompt_opt() {
-  printf '%s%s%s%s%s' "$1" "${PROMPT_US}" "$2" "${PROMPT_US}" "${3:-}"
+  local record=""
+
+  record="$(printf '%s%s%s%s%s' "$1" "${PROMPT_US}" "$2" "${PROMPT_US}" "${3:-}")"
+  if [[ -n "${4:-}" ]]; then
+    record="${record}${PROMPT_US}$4"
+  fi
+  printf '%s' "${record}"
 }
 
 # Split one record into PROMPT_VALUE / PROMPT_LABEL / PROMPT_HINT. Done with
@@ -38,6 +49,7 @@ prompt_opt() {
 PROMPT_VALUE=""
 PROMPT_LABEL=""
 PROMPT_HINT=""
+PROMPT_HINT_LEVEL=""
 _prompt_split() {
   local record="$1"
   local rest=""
@@ -45,7 +57,24 @@ _prompt_split() {
   PROMPT_VALUE="${record%%${PROMPT_US}*}"
   rest="${record#*${PROMPT_US}}"
   PROMPT_LABEL="${rest%%${PROMPT_US}*}"
-  PROMPT_HINT="${rest#*${PROMPT_US}}"
+  rest="${rest#*${PROMPT_US}}"
+  PROMPT_HINT="${rest%%${PROMPT_US}*}"
+  if [[ "${rest}" == *"${PROMPT_US}"* ]]; then
+    PROMPT_HINT_LEVEL="${rest#*${PROMPT_US}}"
+  else
+    PROMPT_HINT_LEVEL=""
+  fi
+}
+
+# Draw the hint column for the option just split. A hint with a state level is
+# drawn in that level's color; without one it stays dim, which is what every
+# record that predates the level looked like.
+_prompt_draw_hint() {
+  if [[ -n "${PROMPT_HINT_LEVEL}" ]]; then
+    printf '   %s%s%s' "$(_ui_state_color "${PROMPT_HINT_LEVEL}")" "${PROMPT_HINT}" "${UI_RESET}" >&2
+  else
+    printf '   %s%s%s' "${UI_DIM}" "${PROMPT_HINT}" "${UI_RESET}" >&2
+  fi
 }
 
 # Is there a terminal on stdin to read an answer from?
@@ -140,7 +169,7 @@ _prompt_draw_options() {
         "${UI_DIM}" "${UI_S_OFF}" "${label}" "${UI_RESET}" >&2
     fi
     if [[ -n "${PROMPT_HINT}" ]]; then
-      printf '   %s%s%s' "${UI_DIM}" "${PROMPT_HINT}" "${UI_RESET}" >&2
+      _prompt_draw_hint
     fi
     printf '\n' >&2
     i=$(( i + 1 ))
@@ -235,7 +264,7 @@ _prompt_draw_checks() {
         "${UI_DIM}" "${label}" "${UI_RESET}" >&2
     fi
     if [[ -n "${PROMPT_HINT}" ]]; then
-      printf '   %s%s%s' "${UI_DIM}" "${PROMPT_HINT}" "${UI_RESET}" >&2
+      _prompt_draw_hint
     fi
     printf '\n' >&2
     i=$(( i + 1 ))
