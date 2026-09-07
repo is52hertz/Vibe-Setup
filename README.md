@@ -59,9 +59,27 @@ are copied in.
 vibe-init --apply
 ```
 
-`--apply` lists the managed files with their status and lets you copy **all or a
-subset**. Existing files are never overwritten or merged — when a target already
-exists, the copy lands alongside it as `<name>.template` instead.
+`--apply` lists the managed files with their status and lets you sync **all or a
+subset**.
+
+The sync is a three-way merge, not a copy. `vibe-init` records what it wrote in
+`.vibe-init/manifest` (content hashes, per file and per `<TAG>` block), so it can
+tell a template change from your own edits:
+
+| Situation | What happens |
+| --- | --- |
+| The file already matches the template | Nothing — it is not touched or listed. |
+| The template has not moved since it was written | Nothing — the differences are yours. |
+| The template moved and you did not touch it | Refreshed in place, per block for `AGENTS.md` / `CLAUDE.md`. |
+| Both moved | Left alone; the new template lands beside it as `<name>.template` with a prompt for your AI agent naming the blocks still open. |
+
+Nothing you wrote is ever overwritten. A project with no manifest yet (an older
+one, or a fresh clone) has no merge base, so its first sync treats every
+existing file as needing review and adopts what already matches — later runs are
+quiet. `--on-exists overwrite|template|skip` bypasses the merge and applies the
+older blunt file-level policy instead.
+
+`.vibe-init/` is local bookkeeping and is added to the project's `.gitignore`.
 
 ### Options
 
@@ -102,24 +120,25 @@ rather than overwriting it.
 
 ## Safety
 
-- Existing project files are skipped, never overwritten; `--apply` writes a
-  `<name>.template` copy instead of touching what you already have.
+- Existing project files are skipped, never overwritten. `--apply` only edits a
+  file where a content hash proves the text is the tool's own and untouched;
+  anything you changed is left for you, with a `<name>.template` copy beside it.
 - `--dry-run` shows exactly what would happen without changing anything.
 - The seeded `.claude/settings.json` blocks agents from reading common secret
   files.
 
 ## Tests
 
-A minimal dry-run assertion suite checks the CLI without writing files or
-running installers:
-
 ```sh
-./test/dry-run.sh
+./test/run.sh
 ```
 
-It runs `vibe-init.sh --dry-run` across the main scenarios (scaffold, `--apply`
-file selection and `--on-exists`, flag guards, and Trellis init) and asserts on
-the actions printed. Exit code 0 means every assertion passed.
+Runs both suites. `test/dry-run.sh` drives the CLI and asserts on what it prints
+— scaffold, `--apply` file selection and `--on-exists`, the sync verdicts, flag
+guards, and Trellis init. `test/units.sh` exercises the libraries directly —
+block assembly and editing, the state manifest, the merge verdicts, and the
+non-interactive contracts of the prompts. Exit code 0 means every assertion
+passed.
 
 ## License
 

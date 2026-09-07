@@ -38,6 +38,25 @@ sandbox() {
   printf '%s\n' "${d}"
 }
 
+# A writable copy of templates/, so a scenario can simulate a template upgrade
+# and watch what a sync does about it.
+template_copy() {
+  local d
+  d="$(sandbox)"
+  cp -R "${REPO_ROOT}/templates" "${d}/templates"
+  printf '%s\n' "${d}/templates"
+}
+
+# Insert a line just above a closing tag, in place. awk rather than sed -i,
+# whose flags differ between BSD and GNU.
+inject_above() {
+  local file="$1" closing="$2" line="$3"
+  awk -v closing="${closing}" -v line="${line}" '
+    $0 == closing { print line }
+    { print }
+  ' "${file}" > "${file}.tmp" && mv "${file}.tmp" "${file}"
+}
+
 OUT=""
 RC=0
 # vi <dir> [args...] — run vibe-init in <dir>, capturing combined output + status.
@@ -353,6 +372,144 @@ OUT="$(cd "${d}" && NO_COLOR=1 "${VI}" --trellis no --git no -y --dry-run </dev/
 RC=$?
 rc_is "a scaffold survives NO_COLOR"      0
 has   "NO_COLOR keeps the plain prefix"   "[vibe-init]"
+
+# --- the .vibe-init state directory ----------------------------------------
+# A scaffold records what it wrote, which is what every later sync compares
+# against. Without it apply mode can only ask "does this file exist?".
+d="$(sandbox)"
+vi "${d}" --trellis no --git no -y
+if [[ -f "${d}/.vibe-init/manifest" ]]; then
+  ok "a scaffold records its state"
+else
+  ko "a scaffold records its state" ".vibe-init/manifest was not written"
+fi
+if grep -qxF "$(printf 'version\t1.1.0')" "${d}/.vibe-init/manifest"; then
+  ok "the manifest stamps the tool version"
+else
+  ko "the manifest stamps the tool version" "$(cat "${d}/.vibe-init/manifest" 2>/dev/null | head -5)"
+fi
+if grep -q "$(printf 'block\tAGENTS.md\tCORE_RULES')" "${d}/.vibe-init/manifest"; then
+  ok "the manifest records blocks, not just files"
+else
+  ko "the manifest records blocks, not just files" "no block record for CORE_RULES"
+fi
+
+# The manifest is local bookkeeping, so a repository must ignore it.
+d="$(sandbox)"
+vi "${d}" --trellis no -y
+if [[ -f "${d}/.gitignore" ]] && grep -qxF '.vibe-init/' "${d}/.gitignore"; then
+  ok "git init is followed by a .gitignore entry"
+else
+  ko "git init is followed by a .gitignore entry" "$(cat "${d}/.gitignore" 2>/dev/null)"
+fi
+
+d="$(sandbox)"
+vi "${d}" --trellis no --git no -y
+if [[ -e "${d}/.gitignore" ]]; then
+  ko "--git no writes no .gitignore" "created one in a non-repository"
+else
+  ok "--git no writes no .gitignore"
+fi
+
+# --- sync: a project that already matches is left completely alone ----------
+# This is the regression that made .template pairs meaningless: a project
+# scaffolded seconds earlier used to get one beside every managed file, each
+# byte-identical to the file it sat next to, plus a prompt asking an agent to
+# merge a file with itself.
+d="$(sandbox)"
+vi "${d}" --trellis no --git no -y
+vi "${d}" --apply -y
+has   "an unchanged project has nothing to sync"   "Everything is up to date"
+hasnt "an unchanged project writes no .template"   ".template"
+hasnt "an unchanged project needs no agent prompt" "suggested prompt for your AI agent"
+has   "the file list says up to date"              "up to date"
+if [[ -z "$(find "${d}" -name '*.template' -print -quit)" ]]; then
+  ok "an unchanged project leaves no .template on disk"
+else
+  ko "an unchanged project leaves no .template on disk" "$(find "${d}" -name '*.template')"
+fi
+has "diagnostics report the tool and the project version" "v1.1.0 (project tracked at v1.1.0)"
+hasre "diagnostics report CLAUDE.md's format"             "CLAUDE.md +.*Modern"
+
+d="$(sandbox)"
+vi "${d}" --apply -y --dry-run
+has "an unmanaged project says so" "project not tracked yet"
+
+# --- sync: the user's own edits, with the template standing still -----------
+d="$(sandbox)"
+vi "${d}" --trellis no --git no -y
+inject_above "${d}/AGENTS.md" "</PRODUCT>" "This project is a widget factory."
+vi "${d}" --apply -y
+has   "an edit of my own is not a conflict"  "up to date"
+hasnt "an edit of my own needs no prompt"    "suggested prompt for your AI agent"
+if grep -qF "This project is a widget factory." "${d}/AGENTS.md"; then
+  ok "an edit of my own survives the sync"
+else
+  ko "an edit of my own survives the sync" "the sync overwrote it"
+fi
+
+# --- sync: the template moved and the project did not -----------------------
+# The block engine can do this in place, so there is nothing to hand to an
+# agent: the block the tool owns is refreshed, everything else stays put.
+d="$(sandbox)"
+t="$(template_copy)"
+vi "${d}" --trellis no --git no -y --template-dir "${t}"
+inject_above "${d}/AGENTS.md" "</PRODUCT>" "This project is a widget factory."
+inject_above "${t}/blocks/core_rules.md" "</CORE_RULES>" "- **UPGRADE MARKER**: added by a later template."
+vi "${d}" --apply -y --template-dir "${t}"
+has   "a template-only change refreshes the block in place" "refreshed <CORE_RULES> in AGENTS.md"
+hasnt "a fast-forward writes no .template"                  ".template"
+hasnt "a fast-forward needs no agent prompt"                "suggested prompt for your AI agent"
+if grep -qF "UPGRADE MARKER" "${d}/AGENTS.md"; then
+  ok "the new template content actually lands in the file"
+else
+  ko "the new template content actually lands in the file" "marker missing from AGENTS.md"
+fi
+if grep -qF "This project is a widget factory." "${d}/AGENTS.md"; then
+  ok "a fast-forward does not disturb my own blocks"
+else
+  ko "a fast-forward does not disturb my own blocks" "PRODUCT edit was lost"
+fi
+
+# --- sync: both sides moved the same block ----------------------------------
+# Now, and only now, is there something a human has to decide — so this is the
+# one case that still produces a .template pair and a prompt.
+inject_above "${d}/AGENTS.md" "</CORE_RULES>" "- **MY OWN RULE**: never delete archive branches."
+inject_above "${t}/blocks/core_rules.md" "</CORE_RULES>" "- **SECOND MARKER**: from a still later template."
+vi "${d}" --apply -y --template-dir "${t}"
+has "a real conflict writes the .template pair"  "AGENTS.md.template"
+has "a real conflict prints the merge prompt"    "suggested prompt for your AI agent"
+has "the prompt narrows the agent to the block"  "only these blocks are still open: <CORE_RULES>"
+has "the report names the block, not the file"   "needs review — <CORE_RULES>"
+if grep -qF "MY OWN RULE" "${d}/AGENTS.md"; then
+  ok "a conflicted block is left for me, not overwritten"
+else
+  ko "a conflicted block is left for me, not overwritten" "my rule was overwritten"
+fi
+
+# --- a leftover .template must not swallow the pair -------------------------
+# <name>.template is this tool's own scratch copy, so finding one means the last
+# merge never finished. Skipping it used to drop the pair from the end-of-run
+# hint entirely: the run said "needs format conversion" and then printed no
+# prompt at all, every time, with no way for the user to make progress.
+d="$(sandbox)"
+printf '# my legacy agents file\n' > "${d}/AGENTS.md"
+printf 'stale leftover\n'         > "${d}/AGENTS.md.template"
+vi "${d}" --apply -y --files AGENTS.md
+has "a leftover .template is refreshed, not skipped" "left over from an unfinished merge"
+has "a leftover .template still prints the prompt"   "suggested prompt for your AI agent"
+has "a leftover .template still lists the pair"      "AGENTS.md.template  ->  AGENTS.md"
+if grep -qF '<CORE_RULES>' "${d}/AGENTS.md.template"; then
+  ok "the stale .template is replaced by the current one"
+else
+  ko "the stale .template is replaced by the current one" "$(cat "${d}/AGENTS.md.template")"
+fi
+
+# --- --on-exists still asks for the old file-level disposition --------------
+d="$(sandbox)"
+printf 'existing\n' > "${d}/AGENTS.md"
+vi "${d}" --apply -y --dry-run --on-exists template
+has "--on-exists keeps the file-level labels" "already exists -> template"
 
 echo
 if [[ "${FAIL}" -eq 0 ]]; then

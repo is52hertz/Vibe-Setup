@@ -5,7 +5,8 @@
 # defined there: info, warn, die, ensure_dir, ask_yes_no, ask_value, run_cmd,
 # run_in_dir, DRY_RUN, ASSUME_DEFAULTS, TEMPLATE_DIR, TEMPLATE_SET_LABEL,
 # TEMPLATE_FILES, TEMPLATE_INTEGRATIONS, CC_WORKFLOW_ENABLED, APPLY_FILES,
-# ON_EXISTS — plus lib/ui.sh, lib/block_engine.sh and lib/trellis.sh.
+# ON_EXISTS — plus lib/ui.sh, lib/block_engine.sh, lib/state.sh, lib/sync.sh
+# and lib/trellis.sh.
 #
 # Two shapes, one for each way the command is used:
 #
@@ -15,10 +16,15 @@
 #   Interactive: a dashboard loop — project diagnostics, then template sync,
 #   Trellis lifecycle management, and feature toggles, until the user exits.
 #
-# Copying is non-destructive throughout. For a file that already exists in the
-# target the user chooses per file: overwrite it, write the template alongside
-# as <name>.template, or skip it. The default (and the -y / non-TTY behavior) is
-# the non-destructive <name>.template; --on-exists sets it for the whole run.
+# Syncing is a three-way merge against .vibe-init/manifest, which records what
+# this tool last wrote (see lib/sync.sh): a file or <TAG> block only the
+# template moved is refreshed in place, one the user also changed is left alone
+# and handed to their AI agent as a <name>.template pair, and one that already
+# matches is not touched or even mentioned. Nothing the user wrote is ever
+# overwritten.
+#
+# --on-exists asks for the older file-level disposition by name and still gets
+# it: overwrite / <name>.template / skip, decided per file or set for the run.
 #
 # Compatible with macOS Bash 3.2.
 
@@ -31,6 +37,12 @@ if ! command -v has_block >/dev/null 2>&1; then
 fi
 if ! command -v trellis_is_installed >/dev/null 2>&1; then
   [[ -f "${SCRIPT_DIR}/lib/trellis.sh" ]] && . "${SCRIPT_DIR}/lib/trellis.sh"
+fi
+if ! command -v hash_file >/dev/null 2>&1; then
+  [[ -f "${SCRIPT_DIR}/lib/state.sh" ]] && . "${SCRIPT_DIR}/lib/state.sh"
+fi
+if ! command -v merge_verdict >/dev/null 2>&1; then
+  [[ -f "${SCRIPT_DIR}/lib/sync.sh" ]] && . "${SCRIPT_DIR}/lib/sync.sh"
 fi
 
 # Files chosen for this apply run (relative paths). Declared so expansions are
@@ -82,31 +94,18 @@ resolve_on_exists() {
   done
 }
 
-# The <TAG> whose presence marks a managed file as modern format; empty for
-# files the block engine does not edit (a copied file has no format to
-# convert). One line per entry so the mapping stays next to TEMPLATE_FILES.
-# Usage: modern_marker_tag <relative_path>
-modern_marker_tag() {
-  case "$1" in
-    AGENTS.md) printf 'CORE_RULES\n' ;;
-    CLAUDE.md) printf 'CLAUDE_BASE\n' ;;
-    *)         printf '\n' ;;
-  esac
-}
-
 # The opening tags of an assembled template file, e.g. "<CORE_RULES> <METADATA>
 # <PROFILE>", read out of the materialized set so the conversion prompt never
-# hard-codes a second copy of the vocabulary. Echoes nothing for a missing
-# file; a file without tags echoes an empty string. grep exits 1 on no match,
-# and the || true keeps that from tripping set -e under pipefail.
+# hard-codes a second copy of the vocabulary. Echoes nothing for a missing file.
+# Built on list_blocks, so tag-shaped prose inside a document (a
+# `<YYYY>/<MM>/<DD>` path, say) cannot leak into the vocabulary.
 # Usage: md_tag_vocabulary <file>
 md_tag_vocabulary() {
   local file="$1"
   local tags=""
 
   [[ -f "${file}" ]] || return 0
-  tags="$(grep -oE '<[A-Z_]+( id="[^"]*")?>' "${file}" 2>/dev/null \
-    | sed -E 's/ id="[^"]*"//' | sort -u | tr '\n' ' ')" || true
+  tags="$(list_blocks "${file}" | awk -F'\t' '{ print "<" $1 ">" }' | sort -u | tr '\n' ' ')" || true
   printf '%s\n' "${tags% }"
 }
 
@@ -126,8 +125,14 @@ rel_is_legacy() {
 #   - destination does not exist          -> copy to destination
 #   - exists + overwrite                  -> copy over destination
 #   - exists + template                   -> copy to <destination>.template
-#                                            (skip + warn if that also exists)
 #   - exists + skip                       -> leave the existing file untouched
+#
+# <destination>.template is this tool's own scratch copy — nothing else ever
+# writes it, and the end-of-run prompt asks the agent to delete it once the
+# merge is done. So a leftover one means the previous merge never happened: it
+# is refreshed to the current template rather than treated as precious. It used
+# to be skipped instead, which silently dropped the pair from APPLIED_TEMPLATES
+# and left the user staring at "needs review" with no prompt to act on.
 copy_template_file() {
   local relative_path="$1"
   local destination="$2"
@@ -153,8 +158,7 @@ copy_template_file() {
       template|*)
         target="${destination}.template"
         if [[ -e "${target}" ]]; then
-          warn "skip ${relative_path}: both ${destination} and ${target} exist (won't overwrite)"
-          return
+          info "refreshing ${target} (left over from an unfinished merge)"
         fi
         is_template=1
         ;;
@@ -229,7 +233,35 @@ select_from_files_flag() {
   done
 }
 
+# The menu label for one planned file, e.g. "already exists — needs review (2
+# block(s))". Kept next to the plan states so the checklist, the summary and the
+# end-of-run report can never describe the same file differently.
+# Usage: sync_menu_label <relative_path> <state> <note>
+sync_menu_label() {
+  local rel="$1" state="$2" note="${3:-}"
+  local label=""
+
+  case "${state}" in
+    new)    printf 'new -> creates %s\n' "${rel}"; return ;;
+    same)   label="up to date" ;;
+    update) label="already exists — will refresh" ;;
+    review) label="already exists — needs review" ;;
+    legacy) label="already exists — needs format conversion" ;;
+    *)      label="${state}" ;;
+  esac
+  if [[ -n "${note}" ]]; then
+    printf '%s (%s)\n' "${label}" "${note}"
+  else
+    printf '%s\n' "${label}"
+  fi
+}
+
 # Let the user choose which managed files to copy; populates APPLY_SELECTED.
+#
+# The list is the plan, not a directory listing: a file that already holds the
+# template content is reported as up to date and is not offered, because there
+# is nothing to do to it. Only --on-exists, which asks for the blunt
+# overwrite/template/skip policy by name, still labels files by mere existence.
 choose_apply_files() {
   local project_dir="$1"
   local rel="" status="" label="" input="" token="" ok=""
@@ -246,35 +278,55 @@ choose_apply_files() {
     return
   fi
 
-  # List every managed file with its status; only files with a present source is
+  # List every managed file with its status; only a file with something to do is
   # selectable. The checklist below repeats the names, so the list is printed
   # only for the plain path that has no checklist.
   if ! _prompt_can_draw || [[ "${ASSUME_DEFAULTS}" -eq 1 || ! -t 0 ]]; then
     listing=1
     ui_section "Template files (${TEMPLATE_SET_LABEL})"
   fi
-  for rel in "${TEMPLATE_FILES[@]}"; do
-    status="$(apply_file_status "${rel}" "${project_dir}")"
-    case "${status}" in
-      exists)
-        if [[ -n "${ON_EXISTS}" ]]; then
-          label="already exists -> ${ON_EXISTS}"
-        else
-          label="already exists (choose overwrite / template / skip)"
-        fi
-        ;;
-      new)
-        label="new -> creates ${rel}"
-        ;;
-      missing-source)
-        [[ "${listing}" -eq 1 ]] && ui_kv "${rel}" "not in this set" "${UI_PATH_WIDTH}"
-        continue
-        ;;
-    esac
-    available+=("${rel}")
-    labels+=("${label}")
-    [[ "${listing}" -eq 1 ]] && ui_kv "${rel}" "${label}" "${UI_PATH_WIDTH}"
-  done
+
+  if [[ -n "${ON_EXISTS}" ]]; then
+    # An explicit --on-exists policy is a request for the old file-level
+    # disposition, so the labels stay file-level too.
+    for rel in "${TEMPLATE_FILES[@]}"; do
+      status="$(apply_file_status "${rel}" "${project_dir}")"
+      case "${status}" in
+        exists) label="already exists -> ${ON_EXISTS}" ;;
+        new)    label="new -> creates ${rel}" ;;
+        missing-source)
+          if [[ "${listing}" -eq 1 ]]; then ui_kv "${rel}" "not in this set" "${UI_PATH_WIDTH}"; fi
+          continue
+          ;;
+      esac
+      available+=("${rel}")
+      labels+=("${label}")
+      if [[ "${listing}" -eq 1 ]]; then ui_kv "${rel}" "${label}" "${UI_PATH_WIDTH}"; fi
+    done
+  else
+    sync_run "${project_dir}" plan "${TEMPLATE_FILES[@]}"
+    index=0
+    while [[ "${index}" -lt "${#SYNC_REL[@]}" ]]; do
+      rel="${SYNC_REL[${index}]}"
+      status="${SYNC_STATE[${index}]}"
+      label="$(sync_menu_label "${rel}" "${status}" "${SYNC_NOTE[${index}]}")"
+      index=$(( index + 1 ))
+
+      case "${status}" in
+        missing-source)
+          if [[ "${listing}" -eq 1 ]]; then ui_kv "${rel}" "not in this set" "${UI_PATH_WIDTH}"; fi
+          continue
+          ;;
+        same)
+          if [[ "${listing}" -eq 1 ]]; then ui_kv "${rel}" "${label}" "${UI_PATH_WIDTH}"; fi
+          continue
+          ;;
+      esac
+      available+=("${rel}")
+      labels+=("${label}")
+      if [[ "${listing}" -eq 1 ]]; then ui_kv "${rel}" "${label}" "${UI_PATH_WIDTH}"; fi
+    done
+  fi
 
   if [[ "${#available[@]}" -eq 0 ]]; then
     APPLY_SELECTED=()
@@ -341,7 +393,13 @@ choose_apply_files() {
   done
 }
 
-# Copy the selected files, resolving each pre-existing destination first.
+# Sync the selected files.
+#
+# The default path is the three-way merge in lib/sync.sh: files and blocks that
+# only the template moved are refreshed in place, files the user also changed
+# are handed to their AI agent, and anything already matching is left alone.
+# --on-exists asks for the older file-level disposition by name, so that flag
+# keeps its blunt overwrite / .template / skip behavior.
 apply_templates() {
   local project_dir="$1"
   local rel="" destination="" disposition=""
@@ -349,7 +407,18 @@ apply_templates() {
   choose_apply_files "${project_dir}"
 
   if [[ "${#APPLY_SELECTED[@]}" -eq 0 ]]; then
-    info "no files selected; nothing to apply"
+    if [[ -z "${ON_EXISTS}" ]]; then
+      sync_reset
+      ui_ok "Everything is up to date — nothing to sync."
+    else
+      info "no files selected; nothing to apply"
+    fi
+    return
+  fi
+
+  if [[ -z "${ON_EXISTS}" ]]; then
+    sync_run "${project_dir}" apply "${APPLY_SELECTED[@]}"
+    sync_report
     return
   fi
 
@@ -371,7 +440,7 @@ apply_templates() {
 # conversion prompt: the agent restructures the old file into the <TAG> layout
 # of the new template, keeping every line of the user's content.
 suggest_template_merges() {
-  local rel="" count="" noun="files were"
+  local rel="" count="" noun="files were" blocks=""
   local legacy_count=0 modern_count=0
 
   count="${#APPLIED_TEMPLATES[@]}"
@@ -393,14 +462,21 @@ suggest_template_merges() {
       for rel in "${APPLIED_TEMPLATES[@]}"; do
         if ! rel_is_legacy "${rel}"; then
           printf '  - %s.template  ->  %s\n' "${rel}" "${rel}"
+          blocks="$(sync_review_blocks_for "${rel}")"
+          if [[ -n "${blocks}" ]]; then
+            printf '    only these blocks are still open: %s\n' "${blocks}"
+          fi
         fi
       done
       printf '%s\n' "Merge the template into my file: keep my customizations, fold in new/changed"
-      printf '%s\n' "guidance, and respect each file's format (e.g. JSON for settings). Where they"
-      printf '%s\n' "genuinely conflict, do not choose silently — list each conflict and ask me to"
-      printf '%s\n' "decide. When you ask me anything, write it in Simplified Chinese (中文); keep"
-      printf '%s\n' "code, identifiers, and your own reasoning in English. After I confirm, delete"
-      printf '%s\n' "the .template files."
+      printf '%s\n' "guidance, and respect each file's format (e.g. JSON for settings). Where a"
+      printf '%s\n' "pair lists open blocks, those are the only ones that need you — every other"
+      printf '%s\n' "block already matches the template and must be left exactly as it is; a block"
+      printf '%s\n' "marked (missing) is in the template but not in my file, so decide with me"
+      printf '%s\n' "whether it belongs and where. Where the two genuinely conflict, do not choose"
+      printf '%s\n' "silently — list each conflict and ask me to decide. When you ask me anything,"
+      printf '%s\n' "write it in Simplified Chinese (中文); keep code, identifiers, and your own"
+      printf '%s\n' "reasoning in English. After I confirm, delete the .template files."
       printf '%s\n' "────────────────────────────────────────────────────────"
     } >&2
   fi
@@ -450,6 +526,9 @@ show_project_diagnostics() {
   local trellis_tools="None"
   local cc_workflow_status="Disabled"
   local agents_status="Missing"
+  local claude_status="Missing"
+  local tracked_status=""
+  local tracked_version=""
 
   # Git check. A repository with no commits yet is the normal state right after
   # vibe-init scaffolds one, and there `rev-parse --abbrev-ref HEAD` prints
@@ -492,14 +571,32 @@ show_project_diagnostics() {
     modern) agents_status="Modern (<TAG> format)" ;;
     legacy) agents_status="Legacy (pre-<TAG> format)" ;;
   esac
+  case "$(file_format "${project_dir}/CLAUDE.md" "CLAUDE_BASE")" in
+    modern) claude_status="Modern (<TAG> format)" ;;
+    legacy) claude_status="Legacy (pre-<TAG> format)" ;;
+  esac
+
+  # Whether this project carries a .vibe-init manifest decides how much the sync
+  # can know: without one there is no merge base, so every existing file has to
+  # be treated as a possible conflict. Saying so up front explains why a first
+  # run on an old project is noisier than every run after it.
+  if state_is_tracked "${project_dir}"; then
+    tracked_version="$(state_get "${project_dir}" version)"
+    [[ -n "${tracked_version}" ]] || tracked_version="unknown"
+    tracked_status="v${VIBE_INIT_VERSION} (project tracked at v${tracked_version})"
+  else
+    tracked_status="v${VIBE_INIT_VERSION} (project not tracked yet)"
+  fi
 
   ui_section "Project environment"
+  ui_kv "vibe-init"     "${tracked_status}"
   ui_kv "Git repo"      "${git_status}"
   ui_kv "Trellis"       "${trellis_status}"
   ui_kv "Platforms"     "${trellis_tools}"
   ui_kv "CC-Workflow"   "${cc_workflow_status}"
   ui_kv "AGENTS.md"     "${agents_status}"
-  if [[ "${agents_status}" == "Legacy"* ]]; then
+  ui_kv "CLAUDE.md"     "${claude_status}"
+  if [[ "${agents_status}" == "Legacy"* || "${claude_status}" == "Legacy"* ]]; then
     ui_kv "Format upgrade" "sync once, then follow the printed agent prompt"
   fi
 }
@@ -507,6 +604,20 @@ show_project_diagnostics() {
 # -----------------------------------------------------------------------------
 # Feature Toggles: CC-Workflow
 # -----------------------------------------------------------------------------
+
+# Record a block a toggle just wrote from its template, so the manifest keeps
+# describing what this tool put on disk. Without it the tool's own edit would
+# look like the user's the next time sync ran.
+# Usage: record_block_as_written <project_dir> <relative_path> <tag> <id>
+record_block_as_written() {
+  local project_dir="$1" rel="$2" tag="$3" id="${4:-}"
+  local block_hash=""
+
+  [[ "${DRY_RUN}" -eq 1 ]] && return 0
+  block_hash="$(hash_block "${project_dir}/${rel}" "${tag}" "${id}")" || return 0
+  state_record_block "${rel}" "${tag}" "${id}" "${block_hash}"
+  state_flush "${project_dir}"
+}
 
 # Turn the CC-Workflow feature on or off for an existing project: the
 # CC-Cowork-Workflow.md document plus the <FEATURE id="cc-workflow"> block in
@@ -578,6 +689,9 @@ toggle_cc_workflow() {
   else
     assemble_claude_md "${claude_md}" 1
   fi
+  # The block we just wrote is the template's own, so record it — otherwise the
+  # next sync would see an unrecorded block and call our own edit a conflict.
+  record_block_as_written "${project_dir}" "CLAUDE.md" "FEATURE" "cc-workflow"
   ui_ok "CC-Workflow enabled (${variant} variant) and referenced from CLAUDE.md."
 }
 
@@ -681,6 +795,7 @@ toggle_trellis_integration() {
   elif append_block_if_missing "${agents}" "INTEGRATION" "trellis" "${block}"; then
     TEMPLATE_INTEGRATIONS="trellis"
     prepare_template_set "ask" "${TEMPLATE_INTEGRATIONS}" "${CC_WORKFLOW_ENABLED}"
+    record_block_as_written "${project_dir}" "AGENTS.md" "INTEGRATION" "trellis"
     ui_ok "Added the Trellis integration block to AGENTS.md."
   else
     ui_error "Could not append the block; AGENTS.md was left untouched."
@@ -695,6 +810,7 @@ orchestrator_dashboard() {
   local project_dir="$1"
   local choice=""
   local cc_state=""
+  local sync_state=""
   local -a actions=()
 
   # Non-interactive (-y, no TTY) or driven by an explicit --files / --on-exists
@@ -720,10 +836,19 @@ orchestrator_dashboard() {
 
     show_project_diagnostics "${project_dir}"
 
+    # Plan the sync before drawing the menu, so the entry says what there is to
+    # do instead of inviting the user into a run that has nothing to change.
+    if [[ -n "${ON_EXISTS}" ]]; then
+      sync_state="${TEMPLATE_SET_LABEL}"
+    else
+      sync_run "${project_dir}" plan "${TEMPLATE_FILES[@]}"
+      sync_state="$(sync_summary)"
+    fi
+
     # Built up in an array rather than nested inline: bash 3.2 mis-parses a
     # command substitution that closes immediately inside another one.
     actions=()
-    actions+=("$(prompt_opt sync    "Sync template files"      "${TEMPLATE_SET_LABEL}")")
+    actions+=("$(prompt_opt sync    "Sync template files"      "${sync_state}")")
     actions+=("$(prompt_opt trellis "Trellis management"       "platforms, update, upgrade")")
     actions+=("$(prompt_opt ccflow  "Toggle CC-Workflow"       "${cc_state}")")
     actions+=("$(prompt_opt integ   "Toggle Trellis block"     "in AGENTS.md")")

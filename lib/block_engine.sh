@@ -72,6 +72,66 @@ file_format() {
   fi
 }
 
+# Every opening tag in <file>, in file order, one "tag<TAB>id" record per line
+# (id empty for a tag that carries none). Only a tag that OWNS ITS LINE counts:
+# that is how the assembled files are written, and it keeps tag-shaped prose
+# (a `<YYYY>/<MM>/<DD>` path in a document, say) out of the vocabulary.
+# Usage: list_blocks <file>
+list_blocks() {
+  local file="$1"
+
+  [[ -f "${file}" ]] || return 0
+  awk '
+    /^<[A-Z_]+([[:space:]]+id="[^"]*")?>[[:space:]]*$/ {
+      line = $0
+      sub(/^</, "", line)
+      sub(/>[[:space:]]*$/, "", line)
+      id = ""
+      if (match(line, /[[:space:]]+id="[^"]*"/)) {
+        id  = substr(line, RSTART, RLENGTH)
+        tag = substr(line, 1, RSTART - 1)
+        sub(/^[[:space:]]+id="/, "", id)
+        sub(/"$/, "", id)
+      } else {
+        tag = line
+      }
+      print tag "\t" id
+    }
+  ' "${file}"
+}
+
+# Print one block of <file>, its opening and closing tag lines included, so the
+# result is byte-comparable with the templates/blocks/ fragment it came from.
+# Returns 1 when the block is not there.
+# Usage: extract_block <file> <tag_name> [id]
+extract_block() {
+  local file="$1"
+  local tag="$2"
+  local id="${3:-}"
+
+  [[ -f "${file}" ]] || return 1
+  awk -v tag="${tag}" -v id="${id}" '
+    BEGIN {
+      in_block = 0
+      found = 0
+      start_pat = (id != "") ? ("<" tag "[[:space:]]+id=[\x22\x27]" id "[\x22\x27]") : ("<" tag ">")
+      end_pat = "</" tag ">"
+    }
+    in_block {
+      print
+      if ($0 ~ end_pat) in_block = 0
+      next
+    }
+    $0 ~ start_pat {
+      in_block = 1
+      found = 1
+      print
+      next
+    }
+    END { if (!found) exit 2 }
+  ' "${file}"
+}
+
 # Append one file to another with exactly one blank line between them.
 _append_fragment() {
   local src="$1"

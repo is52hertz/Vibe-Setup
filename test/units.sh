@@ -44,6 +44,11 @@ die()  { printf '[test] error: %s\n' "$*" >&2; exit 1; }
 . "${REPO_ROOT}/lib/prompt.sh"
 # shellcheck source=../lib/block_engine.sh
 . "${REPO_ROOT}/lib/block_engine.sh"
+VIBE_INIT_VERSION="test"
+# shellcheck source=../lib/state.sh
+. "${REPO_ROOT}/lib/state.sh"
+# shellcheck source=../lib/sync.sh
+. "${REPO_ROOT}/lib/sync.sh"
 
 echo "vibe-init unit tests"
 
@@ -285,6 +290,93 @@ _prompt_split "$(prompt_opt "--claude --codex" "Claude Code + Codex" "two: platf
 is "a record round-trips its value" "${PROMPT_VALUE}" "--claude --codex"
 is "a record round-trips its label" "${PROMPT_LABEL}" "Claude Code + Codex"
 is "a record round-trips its hint"  "${PROMPT_HINT}"  "two: platforms"
+
+# --- list_blocks / extract_block -------------------------------------------
+# The opening tag has to own its line to count. That is how the assembled files
+# are written, and it is what keeps tag-shaped prose out of the vocabulary — the
+# CC-Workflow document really does contain a `<YYYY>/<MM>/<DD>` path.
+printf '<ALPHA>\nbody\n</ALPHA>\n\n<BETA id="two">\nmore\n</BETA>\n\nsee ~/x/<YYYY>/<MM>/rollout\n' \
+  > "${WORK}/blocks.md"
+listed="$(list_blocks "${WORK}/blocks.md" | tr '\t\n' ',;')"
+is    "list_blocks reports tag and id in order" "${listed}" "ALPHA,;BETA,two;"
+hasnt "list_blocks ignores tag-shaped prose"    "${listed}" "YYYY"
+
+is "extract_block returns the block with its tags" \
+  "$(extract_block "${WORK}/blocks.md" BETA two)" '<BETA id="two">
+more
+</BETA>'
+if extract_block "${WORK}/blocks.md" NOPE >/dev/null 2>&1; then
+  ko "extract_block reports a missing block" "returned success"
+else
+  ok "extract_block reports a missing block"
+fi
+
+# A block hash taken out of an assembled file must equal the hash of the
+# templates/blocks/ fragment it came from, or nothing downstream can compare
+# a project against the template it was built from.
+assemble_agents_md "${WORK}/agents-hash.md" "ask" ""
+is "a block hashes the same as its source fragment" \
+  "$(hash_block "${WORK}/agents-hash.md" CORE_RULES)" \
+  "$(hash_file "${TEMPLATE_ROOT}/blocks/core_rules.md")"
+
+# --- merge_verdict ----------------------------------------------------------
+# The whole sync rests on these four answers.
+is "verdict: target already is the template"        "$(merge_verdict A A B)" "same"
+is "verdict: template has not moved, edits are ours" "$(merge_verdict B A B)" "local"
+is "verdict: template moved, target did not"        "$(merge_verdict A B B)" "forward"
+is "verdict: both moved"                            "$(merge_verdict A B C)" "review"
+is "verdict: no merge base means review"            "$(merge_verdict A B '')"  "review"
+
+if block_is_optional PROFILE; then ok "a pruned profile counts as optional"; else ko "a pruned profile counts as optional" "not optional"; fi
+if block_is_optional CORE_RULES; then ko "core rules are not optional" "reported optional"; else ok "core rules are not optional"; fi
+
+# --- the state manifest -----------------------------------------------------
+PROJ="${WORK}/proj"
+mkdir -p "${PROJ}"
+STATE_RECORDS=()
+state_record_file  "AGENTS.md" "hash-file-1"
+state_record_block "AGENTS.md" "CORE_RULES" "" "hash-core-1"
+state_record_block "AGENTS.md" "PROFILE" "tool" "hash-tool-1"
+state_flush "${PROJ}"
+
+if [[ -f "${PROJ}/.vibe-init/manifest" ]]; then ok "state_flush writes the manifest"; else ko "state_flush writes the manifest" "no manifest"; fi
+is "a file hash round-trips"          "$(state_file_hash  "${PROJ}" "AGENTS.md")" "hash-file-1"
+is "a block hash round-trips"         "$(state_block_hash "${PROJ}" "AGENTS.md" "CORE_RULES" "")" "hash-core-1"
+is "a block hash is keyed by its id"  "$(state_block_hash "${PROJ}" "AGENTS.md" "PROFILE" "tool")" "hash-tool-1"
+is "an unrecorded file has no hash"   "$(state_file_hash  "${PROJ}" "CLAUDE.md")" ""
+is "the manifest carries the version" "$(state_get "${PROJ}" version)" "test"
+if state_is_tracked "${PROJ}"; then ok "a project with a manifest reads as tracked"; else ko "a project with a manifest reads as tracked" "not tracked"; fi
+
+# A second flush must replace only what it re-records. A block left out keeps
+# its old merge base — that is what lets a conflicted block stay comparable on
+# the next run instead of being forgotten.
+STATE_RECORDS=()
+state_record_block "AGENTS.md" "CORE_RULES" "" "hash-core-2"
+state_flush "${PROJ}"
+is "re-recording a block replaces it"    "$(state_block_hash "${PROJ}" "AGENTS.md" "CORE_RULES" "")" "hash-core-2"
+is "an untouched block keeps its base"   "$(state_block_hash "${PROJ}" "AGENTS.md" "PROFILE" "tool")" "hash-tool-1"
+is "an untouched file keeps its base"    "$(state_file_hash  "${PROJ}" "AGENTS.md")" "hash-file-1"
+
+is "an untracked project reports no version" "$(state_get "${WORK}" version)" ""
+if state_is_tracked "${WORK}"; then ko "a project with no manifest is untracked" "reported tracked"; else ok "a project with no manifest is untracked"; fi
+
+# --- .gitignore -------------------------------------------------------------
+# The manifest is local bookkeeping, so a git-tracked project must ignore it —
+# and asking twice must not append the entry twice.
+GITPROJ="${WORK}/gitproj"
+mkdir -p "${GITPROJ}"
+git -C "${GITPROJ}" init -q 2>/dev/null
+printf 'node_modules/\n' > "${GITPROJ}/.gitignore"
+ensure_state_gitignored "${GITPROJ}"
+ensure_state_gitignored "${GITPROJ}"
+is    "the state dir is ignored exactly once" \
+  "$(grep -cxF '.vibe-init/' "${GITPROJ}/.gitignore")" "1"
+has   "the user's own .gitignore lines survive" "$(cat "${GITPROJ}/.gitignore")" "node_modules/"
+
+NOGIT="${WORK}/nogit"
+mkdir -p "${NOGIT}"
+ensure_state_gitignored "${NOGIT}"
+if [[ -e "${NOGIT}/.gitignore" ]]; then ko "a non-repo gets no .gitignore" "created one"; else ok "a non-repo gets no .gitignore"; fi
 
 echo
 if [[ "${FAIL}" -eq 0 ]]; then

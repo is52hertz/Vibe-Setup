@@ -18,6 +18,11 @@ SCRIPT_DIR="$(cd -P -- "$(dirname -- "${SCRIPT_SOURCE}")" && pwd)"
 SCRIPT_PATH="${SCRIPT_SOURCE}"
 TEMPLATE_ROOT="${SCRIPT_DIR}/templates"
 
+# Recorded into every scaffolded project (.vibe-init/manifest) and shown in the
+# apply diagnostics, so a project can say which vibe-init last touched it.
+# Bump the minor for a template or behavior change projects should pick up.
+VIBE_INIT_VERSION="1.1.0"
+
 ASSUME_DEFAULTS=0
 DRY_RUN=0
 APPLY_MODE=0
@@ -32,6 +37,8 @@ CC_WORKFLOW_ENABLED=0
 [[ -f "${SCRIPT_DIR}/lib/ui.sh" ]] && . "${SCRIPT_DIR}/lib/ui.sh"
 [[ -f "${SCRIPT_DIR}/lib/prompt.sh" ]] && . "${SCRIPT_DIR}/lib/prompt.sh"
 [[ -f "${SCRIPT_DIR}/lib/block_engine.sh" ]] && . "${SCRIPT_DIR}/lib/block_engine.sh"
+[[ -f "${SCRIPT_DIR}/lib/state.sh" ]] && . "${SCRIPT_DIR}/lib/state.sh"
+[[ -f "${SCRIPT_DIR}/lib/sync.sh" ]] && . "${SCRIPT_DIR}/lib/sync.sh"
 [[ -f "${SCRIPT_DIR}/lib/trellis.sh" ]] && . "${SCRIPT_DIR}/lib/trellis.sh"
 # Optional comma/space separated subset of TEMPLATE_FILES to copy in apply mode.
 # Empty means "ask interactively" (or "all" under -y / non-TTY). Requires --apply.
@@ -973,6 +980,40 @@ write_project_placeholders() {
   copy_optional_template "Test/templates-test-checklist.html" "${project_dir}/Test/templates-test-checklist.html"
 }
 
+# Record what the scaffold just wrote into .vibe-init/manifest. This is the whole
+# point of the manifest: the next --apply gets a merge base and can tell "the
+# template moved" from "the user edited it" instead of treating every existing
+# file as a conflict.
+record_scaffold_state() {
+  local project_dir="$1"
+  local profile="$2"
+  local rel="" source_of_truth="" file_hash=""
+
+  STATE_SET_PROFILE="${profile}"
+  STATE_SET_INTEGRATIONS="${TEMPLATE_INTEGRATIONS}"
+  if [[ "${CC_WORKFLOW_ENABLED}" -eq 1 ]]; then
+    STATE_SET_CC="on"
+  else
+    STATE_SET_CC="off"
+  fi
+
+  for rel in "${TEMPLATE_FILES[@]}"; do
+    # A dry run wrote nothing, so the template is what would have landed; using
+    # it here keeps the reported count honest instead of silently zero.
+    if [[ "${DRY_RUN}" -eq 1 ]]; then
+      source_of_truth="${TEMPLATE_DIR}/${rel}"
+    else
+      source_of_truth="${project_dir}/${rel}"
+    fi
+    [[ -f "${source_of_truth}" ]] || continue
+    file_hash="$(hash_file "${source_of_truth}")" || continue
+    state_record_file "${rel}" "${file_hash}"
+    state_record_all_blocks "${source_of_truth}" "${rel}"
+  done
+
+  state_flush "${project_dir}"
+}
+
 choose_project_dir() {
   local cwd=""
   local project_dir=""
@@ -1136,6 +1177,7 @@ main() {
   fi
 
   write_project_placeholders "${project_dir}"
+  record_scaffold_state "${project_dir}" "${profile}"
 
   if [[ "${profile}" == "ask" ]]; then
     info "AGENTS.md keeps every profile block for the project's AI to resolve"
