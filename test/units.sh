@@ -793,6 +793,113 @@ mkdir -p "${NOGIT}"
 ensure_state_gitignored "${NOGIT}"
 if [[ -e "${NOGIT}/.gitignore" ]]; then ko "a non-repo gets no .gitignore" "created one"; else ok "a non-repo gets no .gitignore"; fi
 
+# --- a run with nothing to record still writes the manifest -----------------
+# An old project whose every file needs review or a format conversion stages no
+# record at all, and state_flush used to return before writing anything — so
+# the project that most needs a merge base never got a .vibe-init/.
+EMPTYPROJ="${WORK}/emptyproj"
+mkdir -p "${EMPTYPROJ}"
+STATE_RECORDS=()
+state_flush "${EMPTYPROJ}"
+if [[ -f "${EMPTYPROJ}/.vibe-init/manifest" ]]; then
+  ok "a flush with no records still writes the manifest"
+else
+  ko "a flush with no records still writes the manifest" "no manifest"
+fi
+
+# A run can stage one key twice: the base a finished merge promotes, then what
+# the sync itself found. Two lines would leave the lookup to sort order.
+STATE_RECORDS=()
+state_record_block "AGENTS.md" "CORE_RULES" "" "hash-second"
+state_record_block "AGENTS.md" "CORE_RULES" "" "hash-first"
+state_flush "${EMPTYPROJ}"
+is "a key staged twice keeps the later record" \
+  "$(state_block_hash "${EMPTYPROJ}" "AGENTS.md" "CORE_RULES" "")" "hash-first"
+is "and writes it once" \
+  "$(grep -c "^block	AGENTS.md	CORE_RULES" "${EMPTYPROJ}/.vibe-init/manifest")" "1"
+
+
+# --- a merge finished outside the tool becomes the merge base ---------------
+# The agent merges; the only signal that comes back is it deleting the
+# .template. Without acting on that, a block the user kept their own way had no
+# base and read "review" on every run, forever.
+MB_SET="${WORK}/mb-set"
+materialize_template_set "${MB_SET}" "ask" "" 0
+TEMPLATE_DIR="${MB_SET}"
+TEMPLATE_FILES=("AGENTS.md" ".claude/settings.json")
+TEMPLATE_SET_LABEL="test"
+MBPROJ="${WORK}/mbproj"
+mkdir -p "${MBPROJ}/.claude"
+awk '/^<\/CORE_RULES>/ { print "- a rule of my own" } { print }' \
+  "${MB_SET}/AGENTS.md" > "${MBPROJ}/AGENTS.md"
+cp "${MB_SET}/.claude/settings.json" "${MBPROJ}/.claude/settings.json"
+STATE_RECORDS=()
+
+sync_run "${MBPROJ}" plan "${TEMPLATE_FILES[@]}"
+is "with no base, an edited block needs review" "${SYNC_N_REVIEW}" "1"
+
+sync_run "${MBPROJ}" apply "AGENTS.md" 2>/dev/null
+if [[ -f "$(state_pending_path "${MBPROJ}" "AGENTS.md")" ]]; then
+  ok "handing out a .template keeps the template it was"
+else
+  ko "handing out a .template keeps the template it was" "nothing under pending/"
+fi
+sync_run "${MBPROJ}" plan "${TEMPLATE_FILES[@]}"
+is "while the .template is there the merge is still open" "${SYNC_N_REVIEW}" "1"
+
+rm -f "${MBPROJ}/AGENTS.md.template"
+sync_run "${MBPROJ}" plan "${TEMPLATE_FILES[@]}"
+is "once the agent deletes it, the plan reads the merge as done" "${SYNC_N_REVIEW}" "0"
+
+# Nothing is selectable now, so this is the path that used to record nothing.
+ASSUME_DEFAULTS=1
+apply_templates "${MBPROJ}" 2>/dev/null
+ASSUME_DEFAULTS=0
+is "the finished merge's template becomes the recorded base" \
+  "$(state_block_hash "${MBPROJ}" "AGENTS.md" "CORE_RULES" "")" \
+  "$(hash_block "${MB_SET}/AGENTS.md" "CORE_RULES")"
+if [[ -e "$(state_pending_path "${MBPROJ}" "AGENTS.md")" ]]; then
+  ko "and the kept copy is forgotten" "still under pending/"
+else
+  ok "and the kept copy is forgotten"
+fi
+is "a file identical to the template is adopted though never offered" \
+  "$(state_file_hash "${MBPROJ}" ".claude/settings.json")" \
+  "$(hash_file "${MB_SET}/.claude/settings.json")"
+sync_run "${MBPROJ}" plan "${TEMPLATE_FILES[@]}"
+is "later runs stay quiet" "${SYNC_N_REVIEW}" "0"
+
+awk '/^<\/CORE_RULES>/ { print "- a new upstream rule" } { print }' \
+  "${MB_SET}/AGENTS.md" > "${WORK}/mb-moved" && mv "${WORK}/mb-moved" "${MB_SET}/AGENTS.md"
+sync_run "${MBPROJ}" plan "${TEMPLATE_FILES[@]}"
+is "when the template moves again, both sides moved" "${SYNC_N_REVIEW}" "1"
+
+# An old project: its AGENTS.md needs a format conversion and its settings file
+# already matches. The sync that selects AGENTS.md must still adopt the other.
+materialize_template_set "${MB_SET}" "ask" "" 0
+OLDPROJ="${WORK}/oldproj"
+mkdir -p "${OLDPROJ}/.claude"
+printf '# AGENTS\n\n## Rules\nold rules\n' > "${OLDPROJ}/AGENTS.md"
+cp "${MB_SET}/.claude/settings.json" "${OLDPROJ}/.claude/settings.json"
+STATE_RECORDS=()
+ASSUME_DEFAULTS=1
+apply_templates "${OLDPROJ}" 2>/dev/null
+ASSUME_DEFAULTS=0
+if [[ -f "${OLDPROJ}/.vibe-init/manifest" ]]; then
+  ok "an old project gets a manifest on its first sync"
+else
+  ko "an old project gets a manifest on its first sync" "no manifest"
+fi
+is "the matching file beside a selected one is adopted" \
+  "$(state_file_hash "${OLDPROJ}" ".claude/settings.json")" \
+  "$(hash_file "${MB_SET}/.claude/settings.json")"
+if [[ -f "${OLDPROJ}/AGENTS.md.template" && ! -e "$(state_pending_path "${OLDPROJ}" "AGENTS.md")" ]]; then
+  ok "a format conversion keeps no template: its merge is the next round"
+else
+  ko "a format conversion keeps no template: its merge is the next round" "pending copy written"
+fi
+
+
 echo
 if [[ "${FAIL}" -eq 0 ]]; then
   printf 'PASS — %d assertions, 0 failures\n' "${PASS}"

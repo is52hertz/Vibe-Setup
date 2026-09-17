@@ -100,15 +100,31 @@ tell a template change from your own edits:
 
 Nothing you wrote is ever overwritten. A project with no manifest yet (an older
 one, or a fresh clone) has no merge base, so its first sync treats every
-existing file as needing review and adopts what already matches — later runs are
-quiet. `--on-exists overwrite|template|skip` bypasses the merge and applies the
-older blunt file-level policy instead.
+existing file that differs as needing review, and records what already matches.
+`--on-exists overwrite|template|skip` bypasses the merge and applies the older
+blunt file-level policy instead.
+
+**How vibe-init learns a merge is done.** The merge happens in your AI agent, not
+in vibe-init, so the prompt tells the agent to delete the `.template` files once
+you confirm — that deletion is the signal. vibe-init keeps a copy of each
+template it handed out; on the next run, a `.template` that is gone means that
+version was merged, and it becomes the merge base. From then on, blocks you kept
+your own way stay quiet, and a later template change is compared against what
+you actually merged. Leave the `.template` in place until the merge is really
+done: deleting it early reads as "keep my version".
 
 `.vibe-init/` is local bookkeeping and is added to the project's `.gitignore`.
 
 An `AGENTS.md` or `CLAUDE.md` written before the `<TAG>` format has no blocks to
-merge. It gets its `<name>.template` beside it and a separate prompt asking your
-AI agent to restructure it — the script never rewrites the file itself.
+merge, so upgrading it takes two rounds — the script never rewrites the file
+itself:
+
+1. **Convert.** The sync writes `<name>.template` and a prompt asking your AI
+   agent to wrap your existing sections in the new `<TAG>` blocks without
+   changing a word. Check the diff, then let the agent delete the `.template`.
+2. **Merge.** Run `vibe-init --apply` again. Now that the file has blocks, the
+   sync compares them one by one and prints the ordinary merge prompt, naming
+   only the blocks that still differ from the template.
 
 ### Options
 
@@ -139,7 +155,7 @@ AI agent to restructure it — the script never rewrites the file itself.
 | `CC-Cowork-Workflow.md` | Optional (`--cc-workflow yes`): how Claude Code delegates execution and review to an external executor. |
 | `.claude/settings.json` | Denies agents from reading secrets (`.env*`, `secrets/**`, `*.pem`/`*.key`/`*.p12`/`*.pfx`). |
 | `Test/templates-test-checklist.html` | A manual test checklist. |
-| `.vibe-init/manifest` | What vibe-init last wrote, as content hashes — the merge base for `--apply`. Added to `.gitignore` in a git project. |
+| `.vibe-init/` | `manifest`: what vibe-init last wrote, as content hashes — the merge base for `--apply`. `pending/`: the templates handed out as `.template`, until their merge is done. Added to `.gitignore` in a git project. |
 
 ## Templates
 

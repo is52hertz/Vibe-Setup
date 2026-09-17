@@ -197,6 +197,9 @@ has   "conversion prompt names the target tags" "<METADATA>"
 has   "conversion prompt covers the anchors"    "PROFILE:service START"
 has   "conversion prompt keeps my content"      "do not rewrite, shorten"
 hasnt "legacy pair absent from merge prompt"    "Bring my files up to date"
+has   "conversion names the merge round after it" "once the conversion is done and the .template files are deleted"
+has   "diagnostics name both rounds"            "then sync again to merge"
+has   "nothing to record still writes the manifest" "dry-run: write .vibe-init/manifest"
 
 # --- apply: modern target keeps the ordinary merge prompt -------------------
 d="$(sandbox)"
@@ -207,6 +210,8 @@ has   "diagnostics see the modern format"     "Modern (<TAG> format)"
 hasnt "modern target gets no upgrade hint"    "Format upgrade"
 has   "modern target gets the merge prompt"   "Bring my files up to date"
 hasnt "modern target gets no conversion prompt" "Restructure my files into the new"
+has   "merge prompt names its completion signal" "how vibe-init knows the merge is done"
+hasnt "a modern run names no second round"     "once the conversion is done"
 
 # --- apply: mixed pair splits the two prompts -------------------------------
 d="$(sandbox)"

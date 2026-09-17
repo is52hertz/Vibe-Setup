@@ -182,6 +182,11 @@ copy_template_file() {
     if [[ -n "${marker}" ]] \
         && [[ "$(file_format "${destination}" "${marker}")" == "legacy" ]]; then
       APPLIED_LEGACY+=("${relative_path}")
+    else
+      # Keep what was handed out: once the agent deletes the .template, this is
+      # the version the file was merged against (see lib/sync.sh). A conversion
+      # keeps nothing, because it only restructures the file.
+      state_save_pending "${destination%/"${relative_path}"}" "${relative_path}" "${source}"
     fi
   fi
 }
@@ -470,13 +475,16 @@ apply_templates() {
       info "no files selected; nothing to apply"
       return
     fi
+    sync_adopt "${project_dir}"
     sync_reset
+    state_flush "${project_dir}"
     ui_ok "Everything is up to date — nothing to sync."
     offer_copy_anyway "${project_dir}"
     return
   fi
 
   if [[ -z "${ON_EXISTS}" ]]; then
+    sync_adopt "${project_dir}" "${APPLY_SELECTED[@]}"
     sync_run "${project_dir}" apply "${APPLY_SELECTED[@]}"
     sync_report
     return
@@ -536,7 +544,8 @@ suggest_template_merges() {
       printf '%s\n' "whether it belongs and where. Where the two genuinely conflict, do not choose"
       printf '%s\n' "silently — list each conflict and ask me to decide. When you ask me anything,"
       printf '%s\n' "write it in Simplified Chinese (中文); keep code, identifiers, and your own"
-      printf '%s\n' "reasoning in English. After I confirm, delete the .template files."
+      printf '%s\n' "reasoning in English. After I confirm, delete the .template files — that is"
+      printf '%s\n' "how vibe-init knows the merge is done, so do not delete them before."
       ui_copy_close
     } >&2
   fi
@@ -571,6 +580,11 @@ suggest_template_merges() {
       printf '%s\n' ".template files."
       ui_copy_close
     } >&2
+    # The conversion only restructures; the content merge is a second round, and
+    # nothing else on screen says it exists.
+    info "once the conversion is done and the .template files are deleted, run"
+    info "vibe-init --apply again: that sync compares the new blocks with the"
+    info "templates and prints the prompt for merging their content."
   fi
 }
 
@@ -687,7 +701,7 @@ show_project_diagnostics() {
   ui_kv_state "AGENTS.md"   "${agents_level}"  "${agents_state}"  "${agents_detail}"
   ui_kv_state "CLAUDE.md"   "${claude_level}"  "${claude_state}"  "${claude_detail}"
   if [[ "${agents_level}" == "todo" || "${claude_level}" == "todo" ]]; then
-    ui_kv_state "Format upgrade" "todo" "sync once, then follow the printed agent prompt"
+    ui_kv_state "Format upgrade" "todo" "sync, have your agent convert, then sync again to merge"
   fi
 }
 
