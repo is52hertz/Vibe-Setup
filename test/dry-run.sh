@@ -76,6 +76,7 @@ hasnt() { if printf '%s' "${OUT}" | grep -qF -- "$2"; then ko "$1" "expected NOT
 # assertion is that two things landed on the *same* line.
 hasre() { if printf '%s' "${OUT}" | grep -qE -- "$2"; then ok "$1"; else ko "$1" "expected to match: $2"; fi; }
 rc_is() { if [[ "${RC}" == "$2" ]]; then ok "$1"; else ko "$1" "exit ${RC}, expected $2"; fi; }
+is()    { if [[ "$2" == "$3" ]]; then ok "$1"; else ko "$1" "got [$2], want [$3]"; fi; }
 
 echo "vibe-init dry-run tests"
 
