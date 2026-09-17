@@ -52,6 +52,12 @@ VIBE_INIT_VERSION="test"
 APPLY_FILES=""
 ON_EXISTS=""
 TEMPLATE_DIR="${WORK}/tset"
+# lib/apply.sh sources lib/trellis.sh itself, but through ${SCRIPT_DIR}, which
+# here is test/ — so without this the dashboard's Trellis checks were missing
+# functions, and a test that expected "no Trellis update pending" passed on the
+# 127 from "command not found" rather than on the version comparison.
+# shellcheck source=../lib/trellis.sh
+. "${REPO_ROOT}/lib/trellis.sh"
 # lib/apply.sh is nothing but function definitions and a few array inits, so it
 # sources cleanly outside a real run — which is what lets the dashboard's menu
 # ordering be tested without a terminal.
@@ -552,6 +558,10 @@ has "the no-color list still shows the state" "${plain_menu}" "in AGENTS.md (on)
 # whole column instead of trusting it.
 NOTEPROJ="${WORK}/noteproj"
 mkdir -p "${NOTEPROJ}"
+# The dashboard asks the Trellis CLI for its version. Point it at the fake so
+# the rows below never depend on whatever trellis this machine has installed.
+PATH_BEFORE_FAKE="${PATH}"
+PATH="${FAKE_TRELLIS}:${PATH}"
 SYNC_N_NEW=0 SYNC_N_UPDATE=0 SYNC_N_REVIEW=0 SYNC_N_LEGACY=0
 
 resident_of() {
@@ -647,6 +657,7 @@ is "and takes the ok level"                  "${PROMPT_HINT_LEVEL}" "ok"
 _prompt_split "$(dashboard_actions "${MENUPROJ}" "" "" | grep -F 'integ')"
 is "the Trellis block reports itself present" "${PROMPT_ACTIVE}"    "on"
 is "while its hint stays put"                 "${PROMPT_HINT}"      "in AGENTS.md"
+PATH="${PATH_BEFORE_FAKE}"
 
 # --- every ui_* the tool calls has to exist ---------------------------------
 # ui_info did not. lib/ui.sh defines ui_log, and eleven call sites across
