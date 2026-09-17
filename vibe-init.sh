@@ -18,9 +18,28 @@ SCRIPT_DIR="$(cd -P -- "$(dirname -- "${SCRIPT_SOURCE}")" && pwd)"
 SCRIPT_PATH="${SCRIPT_SOURCE}"
 TEMPLATE_ROOT="${SCRIPT_DIR}/templates"
 
+# Recorded into every scaffolded project (.vibe-init/manifest) and shown in the
+# apply diagnostics, so a project can say which vibe-init last touched it.
+# Bump the minor for a template or behavior change projects should pick up.
+VIBE_INIT_VERSION="1.1.0"
+
 ASSUME_DEFAULTS=0
 DRY_RUN=0
 APPLY_MODE=0
+# Whether the scaffolded project gets CC-Cowork-Workflow.md and the CLAUDE.md
+# block that points at it. Empty CHOICE means "ask" (default no); --cc-workflow
+# yes|no sets it non-interactively. In apply mode an unset choice follows what
+# the target project already has.
+CC_WORKFLOW_CHOICE=""
+CC_WORKFLOW_ENABLED=0
+
+# Source helper modules
+[[ -f "${SCRIPT_DIR}/lib/ui.sh" ]] && . "${SCRIPT_DIR}/lib/ui.sh"
+[[ -f "${SCRIPT_DIR}/lib/prompt.sh" ]] && . "${SCRIPT_DIR}/lib/prompt.sh"
+[[ -f "${SCRIPT_DIR}/lib/block_engine.sh" ]] && . "${SCRIPT_DIR}/lib/block_engine.sh"
+[[ -f "${SCRIPT_DIR}/lib/state.sh" ]] && . "${SCRIPT_DIR}/lib/state.sh"
+[[ -f "${SCRIPT_DIR}/lib/sync.sh" ]] && . "${SCRIPT_DIR}/lib/sync.sh"
+[[ -f "${SCRIPT_DIR}/lib/trellis.sh" ]] && . "${SCRIPT_DIR}/lib/trellis.sh"
 # Optional comma/space separated subset of TEMPLATE_FILES to copy in apply mode.
 # Empty means "ask interactively" (or "all" under -y / non-TTY). Requires --apply.
 APPLY_FILES=""
@@ -29,7 +48,7 @@ APPLY_FILES=""
 ON_EXISTS=""
 # Project profile for a NEW project: service|tool|ask. Empty means "ask"
 # interactively, or "ask" (keep every profile block for the AI) under -y / non-TTY.
-# A concrete service|tool prunes the scaffolded AGENTS.md down to that block.
+# A concrete service|tool assembles AGENTS.md with only that PROFILE block.
 # Rejected with --apply, where the AI resolves the profile from the codebase.
 PROFILE=""
 # Single source of truth for the template files vibe-init manages. apply mode
@@ -64,9 +83,32 @@ if [[ -n "${DEVELOPER_NAME}" ]]; then
   DEVELOPER_NAME_FROM_ENV=1
 fi
 TRELLIS_PLATFORMS=""
+# The concrete template set for this run, materialized out of templates/blocks/
+# and templates/common/ into a staging directory by prepare_template_set. Every
+# copy (scaffold and apply alike) reads from here, so a variant is decided in
+# exactly one place. Cleaned up on exit.
 TEMPLATE_DIR=""
-TEMPLATE_DIR_EXPLICIT=0
+TEMPLATE_STAGE_DIR=""
+# Human-readable description of what went into TEMPLATE_DIR, for log lines that
+# would otherwise print a meaningless staging path.
+TEMPLATE_SET_LABEL=""
+# Integration blocks to assemble into AGENTS.md (comma separated ids from
+# templates/blocks/integrations/). Currently just "trellis" or empty.
+TEMPLATE_INTEGRATIONS=""
 TRELLIS_INITIALIZED=0
+# Filled in by resolve_trellis_setup, consumed by run_trellis_init.
+TRELLIS_READY=0
+TRELLIS_DEVELOPER_NAME=""
+TRELLIS_PLATFORM_ARGS=()
+
+# Remove the materialized template set. Registered on EXIT, so an interrupted or
+# failed run does not leave a staging directory behind.
+cleanup_template_stage() {
+  if [[ -n "${TEMPLATE_STAGE_DIR}" && -d "${TEMPLATE_STAGE_DIR}" ]]; then
+    rm -rf "${TEMPLATE_STAGE_DIR}"
+  fi
+}
+trap cleanup_template_stage EXIT
 
 usage() {
   cat <<EOF
@@ -84,22 +126,27 @@ Options:
   --git yes|no             Whether to run git init in the new project (default: yes).
                            Ignored with --apply. Skipped if already a git repository.
   --profile MODE           Project profile for a NEW project: service | tool | ask.
-                           service/tool prune the scaffolded AGENTS.md to that rule
-                           set; ask (the -y / non-TTY default) keeps all profiles for
+                           service/tool assemble AGENTS.md with just that rule set;
+                           ask (the -y / non-TTY default) keeps all profiles for
                            the project's AI to resolve later. Not valid with --apply.
   --trellis yes|no         Whether to install/init Trellis.
+  --cc-workflow yes|no     Whether to include CC-Cowork-Workflow (default: no).
+                           With --apply, the default follows the target project:
+                           the file is offered only if the project already has it.
   --developer-name NAME    Developer identity passed to: trellis init -u NAME.
                            Defaults to \$DEVELOPER_NAME, then git user.name, then \$USER.
   --platforms "FLAGS"      Trellis platform flags, for example: "--claude --codex".
                            Use "none" (or "n") to pass no platform flags.
-  --template-dir DIR       Override the template directory. Default: templates/trellis when
-                           Trellis is enabled, otherwise templates/base. Missing files fall
-                           back to built-in placeholders.
+  --template-dir DIR       Override the template root (the directory holding blocks/ and
+                           common/). Default: templates/ next to this script. The set for a
+                           run is assembled from those blocks; missing ones fall back to
+                           built-in placeholders.
   --apply                  Copy the template files into the CURRENT directory (an existing
-                           project) instead of scaffolding a new one. Asks base vs Trellis
-                           template set (or use --template-dir), then lists the managed files
-                           with their status and asks which to copy. Existing files are left
-                           untouched; the copy is written as <name>.template instead.
+                           project) instead of scaffolding a new one. Opens the orchestrator
+                           dashboard: project diagnostics, then template sync, Trellis
+                           management, and feature toggles. The set is assembled to match the
+                           project (Trellis block when it is Trellis-managed). Existing files
+                           are left untouched; the copy is written as <name>.template instead.
   --files "A,B"            Apply only this subset of the managed files (comma/space separated,
                            e.g. "AGENTS.md,CLAUDE.md") instead of prompting. Requires --apply.
   --on-exists MODE         How --apply resolves a file that already exists, without prompting:
@@ -126,16 +173,19 @@ Behavior:
 EOF
 }
 
+# The three message levels. lib/ui.sh renders them: a gutter line for a human at
+# a terminal, the familiar `[vibe-init] …` line everywhere else. The body of the
+# message is identical either way, so anything that greps the output still works.
 info() {
-  printf '[vibe-init] %s\n' "$*" >&2
+  ui_log "$*"
 }
 
 warn() {
-  printf '[vibe-init] warning: %s\n' "$*" >&2
+  ui_warn "$*"
 }
 
 die() {
-  printf '[vibe-init] error: %s\n' "$*" >&2
+  ui_error "$*"
   exit 1
 }
 
@@ -167,6 +217,16 @@ while [[ $# -gt 0 ]]; do
     --trellis=*)
       TRELLIS_CHOICE="${1#*=}"
       require_arg "--trellis" "${TRELLIS_CHOICE}"
+      shift
+      ;;
+    --cc-workflow)
+      require_arg "$1" "${2:-}"
+      CC_WORKFLOW_CHOICE="$2"
+      shift 2
+      ;;
+    --cc-workflow=*)
+      CC_WORKFLOW_CHOICE="${1#*=}"
+      require_arg "--cc-workflow" "${CC_WORKFLOW_CHOICE}"
       shift
       ;;
     --git)
@@ -213,14 +273,12 @@ while [[ $# -gt 0 ]]; do
       ;;
     --template-dir)
       require_arg "$1" "${2:-}"
-      TEMPLATE_DIR="$2"
-      TEMPLATE_DIR_EXPLICIT=1
+      TEMPLATE_ROOT="$2"
       shift 2
       ;;
     --template-dir=*)
-      TEMPLATE_DIR="${1#*=}"
-      require_arg "--template-dir" "${TEMPLATE_DIR}"
-      TEMPLATE_DIR_EXPLICIT=1
+      TEMPLATE_ROOT="${1#*=}"
+      require_arg "--template-dir" "${TEMPLATE_ROOT}"
       shift
       ;;
     --apply)
@@ -288,10 +346,16 @@ normalize_yes_no() {
   esac
 }
 
+# Ask for a free-text value; echoes the answer.
+#
+#   --yes with a default        take it, ask nothing
+#   --yes without a default     still ask, because there is nothing to fall back
+#                               on (a project name has no sensible default)
+#   no terminal on stdin        take the default, or die if there is none
+#   otherwise                   ask
 ask_value() {
   local question="$1"
   local default_value="${2:-}"
-  local value=""
 
   if [[ "${ASSUME_DEFAULTS}" -eq 1 && -n "${default_value}" ]]; then
     printf '%s\n' "${default_value}"
@@ -304,57 +368,24 @@ ask_value() {
     return
   fi
 
-  if [[ -n "${default_value}" ]]; then
-    printf '%s [%s]: ' "${question}" "${default_value}" >&2
-  else
-    printf '%s: ' "${question}" >&2
-  fi
-
-  read -r value
-  if [[ -z "${value}" ]]; then
-    value="${default_value}"
-  fi
-  printf '%s\n' "${value}"
+  ui_input "${question}" "${default_value}"
 }
 
+# Ask a yes/no question; returns 0 for yes. --yes and a non-terminal stdin both
+# take the default without asking.
 ask_yes_no() {
   local question="$1"
   local default_value="$2"
   local normalized_default=""
-  local value=""
-  local normalized_value=""
-  local prompt_suffix=""
 
   normalized_default="$(normalize_yes_no "${default_value}")" || die "invalid yes/no default: ${default_value}"
 
-  if [[ "${ASSUME_DEFAULTS}" -eq 1 ]]; then
+  if [[ "${ASSUME_DEFAULTS}" -eq 1 || ! -t 0 ]]; then
     [[ "${normalized_default}" == "yes" ]]
     return
   fi
 
-  if [[ ! -t 0 ]]; then
-    [[ "${normalized_default}" == "yes" ]]
-    return
-  fi
-
-  if [[ "${normalized_default}" == "yes" ]]; then
-    prompt_suffix='[Y/n]'
-  else
-    prompt_suffix='[y/N]'
-  fi
-
-  while true; do
-    printf '%s %s: ' "${question}" "${prompt_suffix}" >&2
-    read -r value
-    if [[ -z "${value}" ]]; then
-      value="${normalized_default}"
-    fi
-    if normalized_value="$(normalize_yes_no "${value}")"; then
-      [[ "${normalized_value}" == "yes" ]]
-      return
-    fi
-    warn "please answer yes or no"
-  done
+  ui_confirm "${question}" "${normalized_default}"
 }
 
 validate_project_name() {
@@ -399,12 +430,11 @@ is_effectively_empty_dir() {
 }
 
 run_cmd() {
+  local rendered=""
+
   if [[ "${DRY_RUN}" -eq 1 ]]; then
-    {
-      printf '[vibe-init] dry-run:'
-      printf ' %q' "$@"
-      printf '\n'
-    } >&2
+    rendered="$(printf ' %q' "$@")"
+    info "dry-run:${rendered}"
     return
   fi
   "$@"
@@ -412,14 +442,12 @@ run_cmd() {
 
 run_in_dir() {
   local dir="$1"
+  local rendered=""
   shift
 
   if [[ "${DRY_RUN}" -eq 1 ]]; then
-    {
-      printf '[vibe-init] dry-run: cd %q &&' "${dir}"
-      printf ' %q' "$@"
-      printf '\n'
-    } >&2
+    rendered="$(printf ' %q' "$@")"
+    info "dry-run: cd $(printf '%q' "${dir}") &&${rendered}"
     return
   fi
 
@@ -470,7 +498,7 @@ copy_or_write_placeholder() {
   if [[ -f "${source}" ]]; then
     ensure_dir "$(dirname -- "${destination}")"
     if [[ "${DRY_RUN}" -eq 1 ]]; then
-      info "dry-run: copy ${source} -> ${destination}"
+      info "dry-run: copy ${relative_path} -> ${destination}"
     else
       cp "${source}" "${destination}"
       info "copied ${destination}"
@@ -505,7 +533,7 @@ copy_optional_template() {
 
   ensure_dir "$(dirname -- "${destination}")"
   if [[ "${DRY_RUN}" -eq 1 ]]; then
-    info "dry-run: copy ${source} -> ${destination}"
+    info "dry-run: copy ${relative_path} -> ${destination}"
   else
     cp "${source}" "${destination}"
     info "copied ${destination}"
@@ -518,7 +546,7 @@ agents_placeholder() {
 
 > vibe-init fallback: the AGENTS.md template was missing, so this is a minimal
 > emergency stub — not the full ruleset. Replace it with the real template from
-> the Vibe-Setup repo (templates/base/AGENTS.md), or fill in the sections below.
+> the Vibe-Setup repo (templates/blocks/), or fill in the sections below.
 
 ## Product
 
@@ -542,7 +570,7 @@ claude_placeholder() {
 
 > vibe-init fallback: the CLAUDE.md template was missing, so this is a minimal
 > emergency stub. Replace it with the real template from the Vibe-Setup repo
-> (templates/base/CLAUDE.md).
+> (templates/common/CLAUDE.md).
 
 - This file imports AGENTS.md so Claude Code and other coding agents share one source of project instructions.
 - When you need to ask the user something, prefer Claude Code's built-in question tool (AskUserQuestion).
@@ -643,7 +671,7 @@ merge_secret_deny_rules() {
   fi
 
   if [[ "${DRY_RUN}" -eq 1 ]]; then
-    info "dry-run: merge permissions.deny from ${template_settings} into ${settings}"
+    info "dry-run: merge permissions.deny from the template set into ${settings}"
     return
   fi
 
@@ -689,14 +717,50 @@ PY
   fi
 }
 
-install_and_init_trellis() {
-  local project_dir="$1"
+# Ask which AI platforms Trellis should wire up. Offers the combinations people
+# actually pick, with an escape hatch for anything else; --platforms and the
+# non-interactive paths bypass it entirely.
+ask_platforms() {
+  local default_flags="--claude --codex"
+  local choice=""
+  local -a options=()
+
+  if [[ "${ASSUME_DEFAULTS}" -eq 1 || ! -t 0 ]]; then
+    printf '%s\n' "${default_flags}"
+    return
+  fi
+
+  options+=("$(prompt_opt "--claude --codex" "Claude Code + Codex")")
+  options+=("$(prompt_opt "--claude" "Claude Code only")")
+  options+=("$(prompt_opt "--claude --codex --cursor" "Claude Code + Codex + Cursor")")
+  options+=("$(prompt_opt "none" "No platform flags")")
+  options+=("$(prompt_opt "custom" "Something else" "type the flags yourself")")
+
+  choice="$(ui_select "Trellis platforms" "${default_flags}" "${options[@]}")"
+  if [[ "${choice}" == "custom" ]]; then
+    choice="$(ui_input "Trellis platform flags" "${default_flags}")"
+  fi
+
+  printf '%s\n' "${choice}"
+}
+
+# Ask everything Trellis needs, up front and in one block: the install gate,
+# the developer identity and the platform flags. Sets TRELLIS_READY when the run
+# should go on to initialize, plus TRELLIS_DEVELOPER_NAME and
+# TRELLIS_PLATFORM_ARGS for run_trellis_init.
+#
+# Separated from the initialization itself because AGENTS.md has to be assembled
+# and seeded before `trellis init` runs, and the profile that goes into it is
+# asked after this block. Keeping the questions together is worth the split.
+resolve_trellis_setup() {
   local developer_name="${DEVELOPER_NAME}"
   local default_name=""
   local platform_input="${TRELLIS_PLATFORMS}"
   local normalized_platforms=""
-  local platform_args=()
   local installed_version=""
+
+  TRELLIS_READY=0
+  TRELLIS_PLATFORM_ARGS=()
 
   check_trellis_prerequisites
 
@@ -727,9 +791,10 @@ install_and_init_trellis() {
     info "using Trellis developer name from \$DEVELOPER_NAME: ${developer_name} (override with --developer-name)"
   fi
   validate_developer_name "${developer_name}"
+  TRELLIS_DEVELOPER_NAME="${developer_name}"
 
   if [[ -z "${platform_input}" ]]; then
-    platform_input="$(ask_value "Trellis platform flags ('n' or 'none' for no flags)" "--claude --codex")"
+    platform_input="$(ask_platforms)"
   fi
 
   # 'n' / 'none' (any case) opts out: pass no platform flags to trellis init.
@@ -742,15 +807,21 @@ install_and_init_trellis() {
 
   normalized_platforms="${platform_input//,/ }"
   if [[ -n "${normalized_platforms// /}" ]]; then
-    IFS=' ' read -r -a platform_args <<< "${normalized_platforms}"
+    IFS=' ' read -r -a TRELLIS_PLATFORM_ARGS <<< "${normalized_platforms}"
   fi
 
-  # Seed AGENTS.md before trellis init so trellis (skip-existing) preserves our
-  # guidance and only manages the TRELLIS block inside it. Done here, after the
-  # install gate, so a declined install never leaves a stray TRELLIS block.
+  TRELLIS_READY=1
+}
+
+# Seed AGENTS.md and run `trellis init` with the answers resolved earlier. The
+# seeding has to happen first so trellis (skip-existing) preserves our guidance
+# and only manages the TRELLIS block inside the file.
+run_trellis_init() {
+  local project_dir="$1"
+  local init_args=()
+
   copy_or_write_placeholder "AGENTS.md" "${project_dir}/AGENTS.md" "$(agents_placeholder)"
 
-  local init_args=()
   if [[ "${ASSUME_DEFAULTS}" -eq 1 || ! -t 0 ]]; then
     # Non-interactive: -y accepts trellis prompts (e.g. spec template) and
     # already implies skip-existing, so our seeded AGENTS.md is preserved.
@@ -762,29 +833,48 @@ install_and_init_trellis() {
   fi
 
   info "initializing Trellis in ${project_dir}"
-  # ${platform_args[@]+...} expands to nothing (not an error) when the array is
-  # empty under set -u on bash 3.2.
-  run_in_dir "${project_dir}" trellis init "${init_args[@]}" -u "${developer_name}" ${platform_args[@]+"${platform_args[@]}"}
+  # ${TRELLIS_PLATFORM_ARGS[@]+...} expands to nothing (not an error) when the
+  # array is empty under set -u on bash 3.2.
+  run_in_dir "${project_dir}" trellis init "${init_args[@]}" -u "${TRELLIS_DEVELOPER_NAME}" ${TRELLIS_PLATFORM_ARGS[@]+"${TRELLIS_PLATFORM_ARGS[@]}"}
 
   merge_secret_deny_rules "${project_dir}"
   TRELLIS_INITIALIZED=1
 }
 
-resolve_template_dir() {
-  local install_trellis="$1"
+# Materialize the template set this run needs (profile x integrations x
+# features) into a staging directory and point TEMPLATE_DIR at it. Safe under
+# --dry-run: it only ever writes inside the staging directory, never into the
+# user's project, and it makes dry-run output reflect the real files.
+#
+# Can be called again to rebuild the set when a choice changes (e.g. the user
+# declined the Trellis install after asking for it).
+prepare_template_set() {
+  local profile="$1"
+  local integrations="$2"
+  local enable_cc="$3"
+  local tmp_root="${TMPDIR:-/tmp}"
 
-  if [[ "${TEMPLATE_DIR_EXPLICIT}" -eq 1 ]]; then
-    return
+  if [[ ! -d "${TEMPLATE_ROOT}/blocks" ]]; then
+    warn "template blocks not found under ${TEMPLATE_ROOT}; falling back to built-in placeholders"
   fi
 
-  if [[ "${install_trellis}" -eq 1 ]]; then
-    TEMPLATE_DIR="${TEMPLATE_ROOT}/trellis"
+  # Rebuild from scratch so a second call cannot inherit stale files.
+  cleanup_template_stage
+  tmp_root="${tmp_root%/}"
+  TEMPLATE_STAGE_DIR="$(mktemp -d "${tmp_root}/vibe-init-set.XXXXXX")" \
+    || die "could not create a staging directory for the template set"
+
+  TEMPLATE_DIR="${TEMPLATE_STAGE_DIR}"
+  materialize_template_set "${TEMPLATE_DIR}" "${profile}" "${integrations}" "${enable_cc}"
+
+  TEMPLATE_SET_LABEL="profile=${profile}"
+  if [[ -n "${integrations}" ]]; then
+    TEMPLATE_SET_LABEL="${TEMPLATE_SET_LABEL}, integrations=${integrations}"
+  fi
+  if [[ "${enable_cc}" -eq 1 ]]; then
+    TEMPLATE_SET_LABEL="${TEMPLATE_SET_LABEL}, cc-workflow=on"
   else
-    TEMPLATE_DIR="${TEMPLATE_ROOT}/base"
-  fi
-
-  if [[ ! -d "${TEMPLATE_DIR}" ]]; then
-    warn "template dir not found: ${TEMPLATE_DIR}; falling back to built-in placeholders"
+    TEMPLATE_SET_LABEL="${TEMPLATE_SET_LABEL}, cc-workflow=off"
   fi
 }
 
@@ -817,79 +907,62 @@ maybe_init_git() {
   fi
 
   info "initializing git repository in ${project_dir}"
-  run_in_dir "${project_dir}" git init
+  # -q because we have already said what is happening: git's own line would be
+  # the one thing in the run that does not hang off the gutter.
+  run_in_dir "${project_dir}" git init -q
 }
 
-# Prune the scaffolded AGENTS.md to a single profile: drop the other PROFILE
-# blocks, every PROFILE marker comment, and the one-time PROFILE-SETUP note,
-# leaving the chosen block's content. A no-op if the file carries no markers
-# (e.g. AGENTS.md came from the built-in placeholder). Honors --dry-run.
-prune_profile() {
-  local file="$1"
-  local profile="$2"
-  local tmp=""
-
-  if [[ "${DRY_RUN}" -eq 1 ]]; then
-    info "dry-run: prune ${file} to '${profile}' profile"
-    return 0
-  fi
-
-  [[ -f "${file}" ]] || return 0
-  grep -q '<!-- PROFILE:' "${file}" || return 0
-
-  tmp="${file}.prune.$$"
-  if awk -v keep="${profile}" '
-    /<!-- PROFILE-SETUP/ { in_setup = 1 }
-    in_setup { if ($0 ~ /-->/) in_setup = 0; next }
-    /<!-- PROFILE:[A-Za-z]+ START -->/ {
-      name = $0
-      sub(/.*<!-- PROFILE:/, "", name)
-      sub(/ START -->.*/, "", name)
-      if (name != keep) in_drop = 1
-      next
-    }
-    /<!-- PROFILE:[A-Za-z]+ END -->/ { in_drop = 0; next }
-    in_drop { next }
-    { print }
-  ' "${file}" | cat -s > "${tmp}"; then
-    mv "${tmp}" "${file}"
-    info "pruned ${file} to '${profile}' profile"
-  else
-    rm -f "${tmp}"
-    warn "failed to prune ${file}; left as-is"
-  fi
-}
-
-# Resolve the project profile and, when concrete (service|tool), prune the
-# scaffolded AGENTS.md to it. --profile wins; otherwise -y / non-TTY default to
-# "ask" (keep every block for the project's AI); an interactive run is prompted.
-resolve_and_apply_profile() {
-  local project_dir="$1"
+# Resolve which profile the scaffolded AGENTS.md is assembled with, and echo it.
+# --profile wins; otherwise -y / non-TTY default to "ask" (every profile block
+# plus the one-time PROFILE_SETUP note, for the project's AI to resolve later);
+# an interactive run is prompted. Nothing is written here — the choice is an
+# input to the assembly, not a post-hoc edit of a generated file.
+resolve_profile() {
   local choice="" lower=""
+  local -a options=()
 
   if [[ -n "${PROFILE}" ]]; then
     lower="$(printf '%s' "${PROFILE}" | tr '[:upper:]' '[:lower:]')"
   elif [[ "${ASSUME_DEFAULTS}" -eq 1 || ! -t 0 ]]; then
     lower="ask"
   else
-    while true; do
-      choice="$(ask_value "Project profile: service / tool / ask ('ask' = let the AI decide later)" "ask")"
-      lower="$(printf '%s' "${choice}" | tr '[:upper:]' '[:lower:]')"
-      case "${lower}" in
-        service|tool|ask) break ;;
-        *) warn "please answer service, tool, or ask" ;;
-      esac
-    done
+    options+=("$(prompt_opt service "Service / backend" "APIs, datastores, long-running")")
+    options+=("$(prompt_opt tool "Tool / script" "small CLIs, utilities")")
+    options+=("$(prompt_opt ask "Decide later" "keep both, let the project's AI resolve it")")
+    choice="$(ui_select "What kind of project is this?" "ask" "${options[@]}")"
+    lower="$(printf '%s' "${choice}" | tr '[:upper:]' '[:lower:]')"
   fi
 
-  case "${lower}" in
-    service|tool)
-      prune_profile "${project_dir}/AGENTS.md" "${lower}"
-      ;;
-    *)
-      info "leaving all profile blocks in AGENTS.md for the project's AI to resolve"
-      ;;
-  esac
+  printf '%s\n' "${lower}"
+}
+
+# Resolve whether this run includes the CC-Cowork-Workflow feature, and echo
+# 1 or 0. --cc-workflow wins; otherwise -y / non-TTY default to off and an
+# interactive run is prompted (default no — it is a Claude-Code-only extra, not
+# part of the baseline every project wants).
+resolve_cc_workflow() {
+  local normalized=""
+
+  if [[ -n "${CC_WORKFLOW_CHOICE}" ]]; then
+    normalized="$(normalize_yes_no "${CC_WORKFLOW_CHOICE}")" || die "--cc-workflow must be yes or no"
+    if [[ "${normalized}" == "yes" ]]; then
+      printf '1\n'
+    else
+      printf '0\n'
+    fi
+    return
+  fi
+
+  if [[ "${ASSUME_DEFAULTS}" -eq 1 || ! -t 0 ]]; then
+    printf '0\n'
+    return
+  fi
+
+  if ask_yes_no "Include CC-Cowork-Workflow (Claude Code external executor co-work)?" "no"; then
+    printf '1\n'
+  else
+    printf '0\n'
+  fi
 }
 
 write_project_placeholders() {
@@ -898,9 +971,47 @@ write_project_placeholders() {
   # Keep this file list in sync with TEMPLATE_FILES (used by apply mode).
   copy_or_write_placeholder "AGENTS.md" "${project_dir}/AGENTS.md" "$(agents_placeholder)"
   copy_or_write_placeholder "CLAUDE.md" "${project_dir}/CLAUDE.md" "$(claude_placeholder)"
-  copy_optional_template "CC-Cowork-Workflow.md" "${project_dir}/CC-Cowork-Workflow.md"
+  # Only in the materialized set when the feature is on; guarded here too so an
+  # opt-out reads as a choice rather than as a missing template.
+  if [[ "${CC_WORKFLOW_ENABLED}" -eq 1 ]]; then
+    copy_optional_template "CC-Cowork-Workflow.md" "${project_dir}/CC-Cowork-Workflow.md"
+  fi
   copy_or_write_placeholder ".claude/settings.json" "${project_dir}/.claude/settings.json" "$(claude_settings_placeholder)"
   copy_optional_template "Test/templates-test-checklist.html" "${project_dir}/Test/templates-test-checklist.html"
+}
+
+# Record what the scaffold just wrote into .vibe-init/manifest. This is the whole
+# point of the manifest: the next --apply gets a merge base and can tell "the
+# template moved" from "the user edited it" instead of treating every existing
+# file as a conflict.
+record_scaffold_state() {
+  local project_dir="$1"
+  local profile="$2"
+  local rel="" source_of_truth="" file_hash=""
+
+  STATE_SET_PROFILE="${profile}"
+  STATE_SET_INTEGRATIONS="${TEMPLATE_INTEGRATIONS}"
+  if [[ "${CC_WORKFLOW_ENABLED}" -eq 1 ]]; then
+    STATE_SET_CC="on"
+  else
+    STATE_SET_CC="off"
+  fi
+
+  for rel in "${TEMPLATE_FILES[@]}"; do
+    # A dry run wrote nothing, so the template is what would have landed; using
+    # it here keeps the reported count honest instead of silently zero.
+    if [[ "${DRY_RUN}" -eq 1 ]]; then
+      source_of_truth="${TEMPLATE_DIR}/${rel}"
+    else
+      source_of_truth="${project_dir}/${rel}"
+    fi
+    [[ -f "${source_of_truth}" ]] || continue
+    file_hash="$(hash_file "${source_of_truth}")" || continue
+    state_record_file "${rel}" "${file_hash}"
+    state_record_all_blocks "${source_of_truth}" "${rel}"
+  done
+
+  state_flush "${project_dir}"
 }
 
 choose_project_dir() {
@@ -949,35 +1060,40 @@ run_apply_mode() {
 
   target_dir="$(pwd -P)"
 
-  # Pick the source template set. An explicit --template-dir wins; otherwise ask
-  # base vs Trellis (ask_yes_no returns the default under -y / non-TTY, i.e. base).
-  if [[ "${TEMPLATE_DIR_EXPLICIT}" -eq 1 ]]; then
-    resolve_template_dir 0
-  elif ask_yes_no "Apply from the Trellis template set instead of base?" "no"; then
-    resolve_template_dir 1
-  else
-    resolve_template_dir 0
+  # The existing project's shape decides the set, so apply mode never offers a
+  # file the project has no use for: the Trellis integration block only for a
+  # Trellis-managed project, and the CC-Workflow document only when the project
+  # already uses it — unless --cc-workflow says otherwise.
+  if [[ -d "${target_dir}/.trellis" ]]; then
+    TEMPLATE_INTEGRATIONS="trellis"
   fi
+  if [[ -f "${target_dir}/CC-Cowork-Workflow.md" ]]; then
+    CC_WORKFLOW_ENABLED=1
+  fi
+  if [[ -n "${CC_WORKFLOW_CHOICE}" ]]; then
+    CC_WORKFLOW_ENABLED="$(resolve_cc_workflow)"
+  fi
+
+  # Apply mode never prunes profiles: the project's AI resolves that from the
+  # codebase, which is also why --profile is rejected with --apply.
+  prepare_template_set "ask" "${TEMPLATE_INTEGRATIONS}" "${CC_WORKFLOW_ENABLED}"
+
+  ui_intro "vibe-init" "project orchestrator"
 
   [[ -f "${apply_lib}" ]] || die "apply library not found: ${apply_lib}"
   # shellcheck source=lib/apply.sh
   . "${apply_lib}"
 
-  info "applying template set: ${TEMPLATE_DIR}"
-  apply_templates "${target_dir}"
+  orchestrator_dashboard "${target_dir}"
 
-  suggest_template_merges
-
-  hint_if_not_git_repo "${target_dir}"
-
-  info "done"
-  info "target directory: ${target_dir}"
+  ui_outro "done  ${target_dir}"
 }
 
 main() {
   local project_dir=""
   local normalized_trellis_choice=""
   local install_trellis=0
+  local profile=""
 
   if [[ -n "${APPLY_FILES}" && "${APPLY_MODE}" -eq 0 ]]; then
     die "--files requires --apply"
@@ -999,6 +1115,12 @@ main() {
     esac
   fi
 
+  # Validated up front (rather than where it is consumed) so a typo fails before
+  # the run creates directories or prompts for anything.
+  if [[ -n "${CC_WORKFLOW_CHOICE}" ]]; then
+    normalize_yes_no "${CC_WORKFLOW_CHOICE}" >/dev/null || die "--cc-workflow must be yes or no"
+  fi
+
   if [[ "${PROJECT_NAME_POSITIONAL}" -eq 1 && "${APPLY_MODE}" -eq 1 ]]; then
     die "the <PROJECT> name argument is not valid with --apply (--apply targets the current directory)"
   fi
@@ -1008,10 +1130,20 @@ main() {
     return
   fi
 
+  # Everything the user is asked comes first, cheapest and most fundamental
+  # question outward: where the project lives, version control, what kind of
+  # project it is, one optional extra, then the heavyweight Trellis block (which
+  # asks its own follow-ups and installs software). Nothing is written until the
+  # whole shape of the project is settled.
+  ui_intro "vibe-init" "AI agent setup for a new project"
+
   project_dir="$(choose_project_dir)"
 
   maybe_init_git "${project_dir}"
 
+  # Trellis first among the content questions: it is the heaviest choice, it can
+  # install software, and it asks its own follow-ups — all of which belong in one
+  # uninterrupted block rather than split around the lighter questions.
   if [[ -n "${TRELLIS_CHOICE}" ]]; then
     normalized_trellis_choice="$(normalize_yes_no "${TRELLIS_CHOICE}")" || die "--trellis must be yes or no"
     if [[ "${normalized_trellis_choice}" == "yes" ]]; then
@@ -1024,23 +1156,37 @@ main() {
   fi
 
   if [[ "${install_trellis}" -eq 1 ]]; then
-    resolve_template_dir 1
-    install_and_init_trellis "${project_dir}"
+    resolve_trellis_setup
+    if [[ "${TRELLIS_READY}" -eq 1 ]]; then
+      TEMPLATE_INTEGRATIONS="trellis"
+    else
+      # Declined at the install gate: carry on without the integration block.
+      install_trellis=0
+    fi
   fi
 
-  # Use the non-Trellis template set unless Trellis was actually initialized
-  # (e.g. the user chose Trellis but declined to install it).
-  if [[ "${TRELLIS_INITIALIZED}" -eq 0 ]]; then
-    resolve_template_dir 0
+  profile="$(resolve_profile)"
+
+  CC_WORKFLOW_ENABLED="$(resolve_cc_workflow)"
+
+  prepare_template_set "${profile}" "${TEMPLATE_INTEGRATIONS}" "${CC_WORKFLOW_ENABLED}"
+  info "template set: ${TEMPLATE_SET_LABEL}"
+
+  if [[ "${install_trellis}" -eq 1 ]]; then
+    run_trellis_init "${project_dir}"
   fi
 
   write_project_placeholders "${project_dir}"
+  record_scaffold_state "${project_dir}" "${profile}"
 
-  resolve_and_apply_profile "${project_dir}"
+  if [[ "${profile}" == "ask" ]]; then
+    info "AGENTS.md keeps every profile block for the project's AI to resolve"
+  else
+    info "AGENTS.md assembled with the '${profile}' profile"
+  fi
 
-  info "done"
-  info "project directory: ${project_dir}"
   info "next: edit AGENTS.md with real project guidance"
+  ui_outro "done  ${project_dir}"
 }
 
 main "$@"
