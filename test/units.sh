@@ -610,6 +610,7 @@ trellis_note_for() {
     . "'"${REPO_ROOT}"'/lib/ui.sh"
     . "'"${REPO_ROOT}"'/lib/prompt.sh"
     . "'"${REPO_ROOT}"'/lib/block_engine.sh"
+    . "'"${REPO_ROOT}"'/lib/state.sh"
     . "'"${REPO_ROOT}"'/lib/trellis.sh"
     . "'"${REPO_ROOT}"'/lib/apply.sh"
     trellis_menu_note "'"$1"'"
@@ -818,6 +819,12 @@ is "a key staged twice keeps the later record" \
 is "and writes it once" \
   "$(grep -c "^block	AGENTS.md	CORE_RULES" "${EMPTYPROJ}/.vibe-init/manifest")" "1"
 
+STATE_SET_TRELLIS="paused"
+state_flush "${EMPTYPROJ}"
+STATE_SET_TRELLIS=""
+state_flush "${EMPTYPROJ}"
+is "the Trellis state survives a flush that does not set it" \
+  "$(state_get "${EMPTYPROJ}" trellis)" "paused"
 
 # --- a merge finished outside the tool becomes the merge base ---------------
 # The agent merges; the only signal that comes back is it deleting the
@@ -899,6 +906,157 @@ else
   ko "a format conversion keeps no template: its merge is the next round" "pending copy written"
 fi
 
+# --- pausing, restoring and uninstalling Trellis ----------------------------
+# Mid-project, .trellis/ holds tasks, specs, journals and memory. Pausing is
+# Trellis's own reversible `ablate`; uninstalling deletes the lot, so it asks
+# first when git could not give the work back. None of them pass --yes.
+TR_BIN="${WORK}/trbin"
+mkdir -p "${TR_BIN}"
+cat > "${TR_BIN}/trellis" <<'FAKE'
+#!/usr/bin/env bash
+# TR_DECLINE=1 stands for the user saying no at Trellis's own prompt.
+[[ "$1" == "--version" ]] && { echo "0.6.16"; exit 0; }
+echo "RAN trellis $*"
+[[ "${TR_DECLINE:-0}" == 1 ]] && exit 1
+case "$1" in
+  ablate)    mv .trellis .trellis-ablated ;;
+  restore)   mv .trellis-ablated .trellis ;;
+  uninstall) rm -rf .trellis ;;
+esac
+FAKE
+chmod +x "${TR_BIN}/trellis"
+
+# trellis_ops <project_dir> <yes|no> <menu choice, or "" for the default> <code>
+# Runs <code> with the libraries loaded and the fake CLI on PATH. Every
+# confirmation answers <yes|no>; the first menu answers the choice and any later
+# one "back", so a loop cannot spin.
+trellis_ops() {
+  rm -f "${WORK}/tr-selected"
+  TR_PROJ="$1" TR_ANSWER="$2" TR_SELECT="$3" TR_WORK="${WORK}" TR_REPO="${REPO_ROOT}" \
+    TR_DECLINE="${TR_DECLINE:-0}" PATH="${TR_BIN}:${PATH}" bash -c '
+    set -uo pipefail
+    SCRIPT_DIR="${TR_WORK}"
+    TEMPLATE_ROOT="${TR_REPO}/templates"
+    DRY_RUN=0; ASSUME_DEFAULTS=0; VIBE_INIT_VERSION="test"
+    CC_WORKFLOW_ENABLED=0; TEMPLATE_INTEGRATIONS="trellis"
+    info() { printf "[test] %s\n" "$*" >&2; }
+    warn() { printf "[test] warning: %s\n" "$*" >&2; }
+    for lib in ui prompt block_engine state sync trellis apply; do
+      . "${TR_REPO}/lib/${lib}.sh"
+    done
+    run_in_dir() { local d="$1"; shift; (cd "${d}" && "$@"); }
+    prepare_template_set() { :; }
+    resolve_trellis_setup() { printf "INIT\n" >&2; TRELLIS_READY=0; }
+    ask_yes_no() { printf "ASKED %s\n" "$1" >&2; [[ "${TR_ANSWER}" == yes ]]; }
+    ui_select() {
+      if [[ -e "${TR_WORK}/tr-selected" ]]; then printf "back\n"; return; fi
+      : > "${TR_WORK}/tr-selected"
+      printf "%s\n" "${TR_SELECT:-$2}"
+    }
+    eval "$1"
+  ' _ "$4" 2>&1
+}
+trellis_ran() { printf '%s\n' "$1" | grep '^RAN trellis' || true; }
+
+# A project mid-work: a task, and the integration block in AGENTS.md.
+TRP="${WORK}/trpause"
+mkdir -p "${TRP}/.trellis/tasks/t1"
+printf 'decisions\n' > "${TRP}/.trellis/tasks/t1/prd.md"
+{ printf '<CORE_RULES>\nrules\n</CORE_RULES>\n\n'; cat "${TEMPLATE_ROOT}/blocks/integrations/trellis.md"; } \
+  > "${TRP}/AGENTS.md"
+
+TR_DECLINE=1
+out="$(trellis_ops "${TRP}" yes pause 'manage_trellis "${TR_PROJ}"')"
+TR_DECLINE=0
+if [[ -d "${TRP}/.trellis" ]] && [[ "$(state_get "${TRP}" trellis)" != "paused" ]]; then
+  ok "declining at Trellis's prompt records no pause"
+else
+  ko "declining at Trellis's prompt records no pause" "recorded or moved"
+fi
+hasnt "and asks nothing about the block" "${out}" "ASKED Remove the Trellis integration block"
+
+out="$(trellis_ops "${TRP}" yes pause 'manage_trellis "${TR_PROJ}"')"
+is    "pause runs trellis ablate, leaving the confirmation to Trellis" "$(trellis_ran "${out}")" "RAN trellis ablate"
+is    "and records the project as paused" "$(state_get "${TRP}" trellis)" "paused"
+if has_block "${TRP}/AGENTS.md" "INTEGRATION" "trellis"; then
+  ko "the integration block goes when the user agrees" "still there"
+else
+  ok "the integration block goes when the user agrees"
+fi
+
+has "a paused project reads paused in the menu" \
+  "$(trellis_ops "${TRP}" no "" 'trellis_menu_note "${TR_PROJ}"')" "paused"
+has "and on the diagnostics card" \
+  "$(trellis_ops "${TRP}" no "" 'show_project_diagnostics "${TR_PROJ}"')" "Paused"
+
+out="$(trellis_ops "${TRP}" yes "" 'manage_trellis "${TR_PROJ}"')"
+is "a paused project's Trellis menu leads with restore" "$(trellis_ran "${out}")" "RAN trellis restore"
+if [[ -f "${TRP}/.trellis/tasks/t1/prd.md" ]]; then ok "restore brings the work back"; else ko "restore brings the work back" "no prd.md"; fi
+is "and records the project as active" "$(state_get "${TRP}" trellis)" "active"
+if has_block "${TRP}/AGENTS.md" "INTEGRATION" "trellis"; then
+  ok "and offers the integration block back"
+else
+  ko "and offers the integration block back" "block not re-added"
+fi
+
+NEVER="${WORK}/trnever"
+mkdir -p "${NEVER}"
+has "a project that never had Trellis leads with init" \
+  "$(trellis_ops "${NEVER}" no "" 'manage_trellis "${TR_PROJ}"')" "INIT"
+
+# Uninstall: uncommitted work outside git asks first, and no means nothing runs.
+if trellis_has_unprotected_data "${TRP}"; then
+  ok "work outside a git repository is unprotected"
+else
+  ko "work outside a git repository is unprotected" "reported protected"
+fi
+out="$(trellis_ops "${TRP}" no uninstall 'manage_trellis "${TR_PROJ}"')"
+has   "uninstalling unprotected work asks first" "${out}" "ASKED Uninstall and delete them anyway?"
+is    "and declining runs nothing" "$(trellis_ran "${out}")" ""
+if [[ -d "${TRP}/.trellis" ]]; then ok "and deletes nothing"; else ko "and deletes nothing" ".trellis is gone"; fi
+
+out="$(trellis_ops "${TRP}" yes uninstall 'manage_trellis "${TR_PROJ}"')"
+is "agreeing runs trellis uninstall without --yes" "$(trellis_ran "${out}")" "RAN trellis uninstall"
+is "and records Trellis as gone" "$(state_get "${TRP}" trellis)" "none"
+
+GITTR="${WORK}/trgit"
+mkdir -p "${GITTR}/.trellis/tasks/t1"
+printf 'decisions\n' > "${GITTR}/.trellis/tasks/t1/prd.md"
+git -C "${GITTR}" init -q
+git -C "${GITTR}" add -A
+git -C "${GITTR}" -c user.name=t -c user.email=t@example.com commit -qm init
+if trellis_has_unprotected_data "${GITTR}"; then
+  ko "committed work is protected" "reported unprotected"
+else
+  ok "committed work is protected"
+fi
+hasnt "so uninstalling it does not ask" \
+  "$(trellis_ops "${GITTR}" no uninstall 'trellis_uninstall_project "${TR_PROJ}"')" "ASKED"
+git -C "${GITTR}" checkout -q -- .trellis
+mkdir -p "${GITTR}/.trellis/workspace"
+printf 'journal\n' > "${GITTR}/.trellis/workspace/journal.md"
+printf '.trellis/workspace/\n' > "${GITTR}/.gitignore"
+if trellis_has_unprotected_data "${GITTR}"; then
+  ok "ignored work under .trellis/ is unprotected"
+else
+  ko "ignored work under .trellis/ is unprotected" "reported protected"
+fi
+
+# What still points at Trellis once it has gone.
+CCTR="${WORK}/trcc"
+mkdir -p "${CCTR}"
+cp "${TEMPLATE_ROOT}/blocks/features/cc-workflow/trellis.md" "${CCTR}/CC-Cowork-Workflow.md"
+has "a Trellis-variant workflow document is named" \
+  "$(trellis_ops "${CCTR}" no "" 'after_trellis_left "${TR_PROJ}"')" "still describes the Trellis co-work loop"
+cp "${TEMPLATE_ROOT}/blocks/features/cc-workflow/base.md" "${CCTR}/CC-Cowork-Workflow.md"
+hasnt "the plain variant is not" \
+  "$(trellis_ops "${CCTR}" no "" 'after_trellis_left "${TR_PROJ}"')" "co-work loop"
+
+# Removing the block alone leaves Trellis set up; the toggle says so.
+mkdir -p "${TRP}/.trellis"
+cat "${TEMPLATE_ROOT}/blocks/integrations/trellis.md" >> "${TRP}/AGENTS.md"
+has "the block toggle says Trellis itself stays" \
+  "$(trellis_ops "${TRP}" no "" 'toggle_trellis_integration "${TR_PROJ}"')" "Trellis itself stays set up"
 
 echo
 if [[ "${FAIL}" -eq 0 ]]; then

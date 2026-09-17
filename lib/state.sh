@@ -45,6 +45,10 @@ STATE_RECORDS=()
 STATE_SET_PROFILE=""
 STATE_SET_INTEGRATIONS=""
 STATE_SET_CC=""
+# "paused" after this tool ran `trellis ablate`, "active" after a restore,
+# "none" after an uninstall. Only read while .trellis/ is absent, to tell a
+# paused project from one that never had Trellis.
+STATE_SET_TRELLIS=""
 
 state_dir()  { printf '%s\n' "${1}/${VIBE_STATE_DIR_NAME}"; }
 state_path() { printf '%s\n' "${1}/${VIBE_STATE_DIR_NAME}/manifest"; }
@@ -193,7 +197,7 @@ state_drop_pending() {
 state_flush() {
   local project_dir="$1"
   local dir="" manifest="" tmp_new="" tmp_out="" rec=""
-  local profile="" integrations="" cc="" created=""
+  local profile="" integrations="" cc="" trellis="" created=""
 
   dir="$(state_dir "${project_dir}")"
   manifest="$(state_path "${project_dir}")"
@@ -215,6 +219,7 @@ state_flush() {
   profile="${STATE_SET_PROFILE:-$(state_get "${project_dir}" profile)}"
   integrations="${STATE_SET_INTEGRATIONS:-$(state_get "${project_dir}" integrations)}"
   cc="${STATE_SET_CC:-$(state_get "${project_dir}" cc_workflow)}"
+  trellis="${STATE_SET_TRELLIS:-$(state_get "${project_dir}" trellis)}"
   created="$(state_get "${project_dir}" created)"
   [[ -n "${created}" ]] || created="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
@@ -243,6 +248,7 @@ state_flush() {
     printf 'profile\t%s\n'      "${profile}"
     printf 'integrations\t%s\n' "${integrations}"
     printf 'cc_workflow\t%s\n'  "${cc}"
+    printf 'trellis\t%s\n'      "${trellis}"
     # Old records first, minus the exact keys this run re-recorded, then the new
     # ones. Sorted so a manifest diff stays readable.
     {

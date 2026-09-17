@@ -74,9 +74,19 @@ project versions, git, Trellis and its platforms, CC-Workflow, and whether
 leads with whatever has work:
 
 - **Sync template files** — pick from the files that have something to do.
-- **Trellis management** — add an AI platform, `trellis update`, upgrade the CLI.
-  When the project is already at the CLI's version, the update asks first and
-  defaults to no.
+- **Trellis management** — add an AI platform, `trellis update`, upgrade the CLI,
+  pause, or uninstall. When the project is already at the CLI's version, the
+  update asks first and defaults to no.
+  - **Pause** runs `trellis ablate`: every Trellis file leaves the project and a
+    recovery copy is kept in `~/.trellis` on this machine. **Restore** (offered
+    while paused) runs `trellis restore` and brings tasks, specs, journals and
+    memory back exactly as they were. Use it to switch away mid-project.
+  - **Uninstall** runs `trellis uninstall`, which deletes `.trellis/` for good.
+    If the work under it is not committed, vibe-init says so and asks first
+    (default no).
+  - Trellis asks for its own confirmation either way. Afterwards vibe-init
+    offers to remove (or, after a restore, re-add) the Trellis block in
+    `AGENTS.md`.
 - **Toggle CC-Workflow** / **Toggle Trellis block** — add or remove the feature.
   Turning one off removes exactly the block it added; CC-Workflow's own document
   is kept as `CC-Cowork-Workflow.md.disabled`.

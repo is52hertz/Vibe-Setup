@@ -652,6 +652,10 @@ show_project_diagnostics() {
           ;;
       esac
     fi
+  elif trellis_is_paused "${project_dir}"; then
+    trellis_level="todo"
+    trellis_state="Paused"
+    trellis_detail="restore it from Trellis management"
   elif [[ "${c_ver}" != "none" ]]; then
     trellis_level="todo"
     trellis_state="Not initialized"
@@ -803,6 +807,96 @@ toggle_cc_workflow() {
 # Trellis Operations Menu
 # -----------------------------------------------------------------------------
 
+# Record what this tool just did to Trellis in the manifest header — "paused",
+# "active" or "none" — so a project with no .trellis/ can be told apart as
+# paused rather than never set up.
+# Usage: record_trellis_state <project_dir> <state>
+record_trellis_state() {
+  STATE_SET_TRELLIS="$2"
+  state_flush "$1"
+}
+
+# True when this tool paused Trellis here and .trellis/ is still gone.
+# Usage: trellis_is_paused <project_dir>
+trellis_is_paused() {
+  ! trellis_has_project "$1" && [[ "$(state_get "$1" trellis)" == "paused" ]]
+}
+
+# Once Trellis has left the project, paused or uninstalled, two things still
+# point at it: the AGENTS.md block telling every agent to defer to Trellis, and
+# a Trellis-variant CC-Cowork-Workflow.md that spells its loop in Trellis
+# commands. The block is offered for removal; the document is the user's to
+# switch, so it is only named.
+# Usage: after_trellis_left <project_dir>
+after_trellis_left() {
+  local project_dir="$1"
+  local workflow="${project_dir}/CC-Cowork-Workflow.md"
+
+  if has_block "${project_dir}/AGENTS.md" "INTEGRATION" "trellis"; then
+    ui_info "AGENTS.md still tells agents to follow Trellis."
+    if ask_yes_no "Remove the Trellis integration block from AGENTS.md?" "yes"; then
+      remove_trellis_block "${project_dir}"
+    fi
+  fi
+  if [[ -f "${workflow}" ]] && grep -q 'trellis-check' "${workflow}"; then
+    ui_warn "CC-Cowork-Workflow.md still describes the Trellis co-work loop. Toggle"
+    ui_warn "CC-Workflow off and on again to switch it to the plain variant."
+  fi
+}
+
+# The mirror of after_trellis_left, once a restore has brought Trellis back.
+# Usage: after_trellis_restored <project_dir>
+after_trellis_restored() {
+  local project_dir="$1"
+
+  [[ -f "${project_dir}/AGENTS.md" ]] || return 0
+  has_block "${project_dir}/AGENTS.md" "INTEGRATION" "trellis" && return 0
+  if ask_yes_no "Add the Trellis integration block back to AGENTS.md?" "yes"; then
+    add_trellis_block "${project_dir}"
+  fi
+}
+
+# Trellis management for a project with no .trellis/: it either never had
+# Trellis or was paused. Restore is offered either way, because a pause made
+# with the Trellis CLI directly leaves no record here — Trellis itself says so
+# when there is nothing to restore. It leads only when this tool recorded one.
+# Usage: manage_trellis_absent <project_dir>
+manage_trellis_absent() {
+  local project_dir="$1"
+  local choice=""
+  local -a actions=()
+
+  if trellis_is_paused "${project_dir}"; then
+    ui_info "Trellis is paused in this project."
+    actions+=("$(prompt_opt restore "Restore Trellis"          "trellis restore")")
+    actions+=("$(prompt_opt init    "Initialize Trellis"       "trellis init")")
+  else
+    ui_warn "Trellis is not initialized in this project."
+    actions+=("$(prompt_opt init    "Initialize Trellis"       "trellis init")")
+    actions+=("$(prompt_opt restore "Restore a paused Trellis" "trellis restore")")
+  fi
+  actions+=("$(prompt_opt back "Back")")
+
+  _prompt_split "${actions[0]}"
+  choice="$(ui_select "Trellis management" "${PROMPT_VALUE}" "${actions[@]}")"
+  case "${choice}" in
+    init)
+      resolve_trellis_setup
+      if [[ "${TRELLIS_READY}" -eq 1 ]]; then
+        run_trellis_init "${project_dir}"
+      fi
+      ;;
+    restore)
+      trellis_restore_project "${project_dir}" || true
+      if trellis_has_project "${project_dir}"; then
+        record_trellis_state "${project_dir}" active
+        ui_ok "Trellis is restored."
+        after_trellis_restored "${project_dir}"
+      fi
+      ;;
+  esac
+}
+
 manage_trellis() {
   local project_dir="$1"
   local choice=""
@@ -811,22 +905,18 @@ manage_trellis() {
   local -a platforms=()
 
   if ! trellis_has_project "${project_dir}"; then
-    ui_warn "Trellis is not initialized in this project."
-    if ask_yes_no "Initialize Trellis now?" "yes"; then
-      resolve_trellis_setup
-      if [[ "${TRELLIS_READY}" -eq 1 ]]; then
-        run_trellis_init "${project_dir}"
-      fi
-    fi
+    manage_trellis_absent "${project_dir}"
     return
   fi
 
   while true; do
     actions=()
-    actions+=("$(prompt_opt platform "Add an AI platform"      "trellis init --<platform>")")
-    actions+=("$(prompt_opt update   "Update the project"      "trellis update")")
-    actions+=("$(prompt_opt upgrade  "Upgrade the Trellis CLI" "npm install -g")")
-    actions+=("$(prompt_opt back     "Back")")
+    actions+=("$(prompt_opt platform  "Add an AI platform"      "trellis init --<platform>")")
+    actions+=("$(prompt_opt update    "Update the project"      "trellis update")")
+    actions+=("$(prompt_opt upgrade   "Upgrade the Trellis CLI" "npm install -g")")
+    actions+=("$(prompt_opt pause     "Pause Trellis"           "trellis ablate, restorable")")
+    actions+=("$(prompt_opt uninstall "Uninstall Trellis"       "trellis uninstall, deletes .trellis/")")
+    actions+=("$(prompt_opt back      "Back")")
 
     choice="$(ui_select "Trellis management" "back" "${actions[@]}")"
     case "${choice}" in
@@ -849,6 +939,26 @@ manage_trellis() {
       upgrade)
         trellis_upgrade_cli
         ;;
+      pause)
+        # Judge by what is on disk, not the exit status: the user can decline
+        # at Trellis's own prompt, and --dry-run removes nothing.
+        trellis_pause_project "${project_dir}" || true
+        if ! trellis_has_project "${project_dir}"; then
+          record_trellis_state "${project_dir}" paused
+          ui_ok "Trellis is paused. Restore it from Trellis management."
+          after_trellis_left "${project_dir}"
+          break
+        fi
+        ;;
+      uninstall)
+        trellis_uninstall_project "${project_dir}" || true
+        if ! trellis_has_project "${project_dir}"; then
+          record_trellis_state "${project_dir}" none
+          ui_ok "Trellis is uninstalled from this project."
+          after_trellis_left "${project_dir}"
+          break
+        fi
+        ;;
       *)
         break
         ;;
@@ -860,40 +970,37 @@ manage_trellis() {
 # Trellis integration block
 # -----------------------------------------------------------------------------
 
-# Add or drop <INTEGRATION id="trellis"> in the project's AGENTS.md — the block
-# that tells every agent how this file and Trellis divide authority. Rebuilds the
-# template set afterwards so a later sync in the same session stays consistent.
-toggle_trellis_integration() {
+# Drop <INTEGRATION id="trellis"> from AGENTS.md. The caller has asked already.
+# Rebuilds the template set afterwards so a later sync in the same session
+# stays consistent.
+# Usage: remove_trellis_block <project_dir>
+remove_trellis_block() {
+  local project_dir="$1"
+  local agents="${project_dir}/AGENTS.md"
+
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    ui_info "dry-run: remove <INTEGRATION id=\"trellis\"> from ${agents}"
+  elif remove_block "${agents}" "INTEGRATION" "trellis"; then
+    TEMPLATE_INTEGRATIONS=""
+    prepare_template_set "ask" "${TEMPLATE_INTEGRATIONS}" "${CC_WORKFLOW_ENABLED}"
+    ui_ok "Removed the Trellis integration block from AGENTS.md."
+  else
+    ui_error "Could not remove the block; AGENTS.md was left untouched."
+  fi
+}
+
+# Append <INTEGRATION id="trellis"> to AGENTS.md and record it as written. The
+# caller has asked already.
+# Usage: add_trellis_block <project_dir>
+add_trellis_block() {
   local project_dir="$1"
   local agents="${project_dir}/AGENTS.md"
   local block="${TEMPLATE_ROOT}/blocks/integrations/trellis.md"
 
-  if [[ ! -f "${agents}" ]]; then
-    ui_warn "No AGENTS.md in this project yet — sync the template files first."
-    return
-  fi
   if [[ ! -f "${block}" ]]; then
     ui_error "Trellis integration block not found: ${block}"
     return
   fi
-
-  if has_block "${agents}" "INTEGRATION" "trellis"; then
-    ui_warn "AGENTS.md currently carries the Trellis integration block."
-    ask_yes_no "Remove it from AGENTS.md?" "no" || return
-    if [[ "${DRY_RUN}" -eq 1 ]]; then
-      ui_info "dry-run: remove <INTEGRATION id=\"trellis\"> from ${agents}"
-    elif remove_block "${agents}" "INTEGRATION" "trellis"; then
-      TEMPLATE_INTEGRATIONS=""
-      prepare_template_set "ask" "${TEMPLATE_INTEGRATIONS}" "${CC_WORKFLOW_ENABLED}"
-      ui_ok "Removed the Trellis integration block from AGENTS.md."
-    else
-      ui_error "Could not remove the block; AGENTS.md was left untouched."
-    fi
-    return
-  fi
-
-  ui_info "AGENTS.md has no Trellis integration block."
-  ask_yes_no "Add it to AGENTS.md?" "yes" || return
   if [[ "${DRY_RUN}" -eq 1 ]]; then
     ui_info "dry-run: append <INTEGRATION id=\"trellis\"> to ${agents}"
   elif append_block_if_missing "${agents}" "INTEGRATION" "trellis" "${block}"; then
@@ -904,6 +1011,35 @@ toggle_trellis_integration() {
   else
     ui_error "Could not append the block; AGENTS.md was left untouched."
   fi
+}
+
+# Add or drop <INTEGRATION id="trellis"> in the project's AGENTS.md — the block
+# that tells every agent how this file and Trellis divide authority. It is only
+# that block: removing it leaves Trellis set up, which is easy to mistake for
+# taking Trellis out, so the way to do that is named before the question.
+toggle_trellis_integration() {
+  local project_dir="$1"
+  local agents="${project_dir}/AGENTS.md"
+
+  if [[ ! -f "${agents}" ]]; then
+    ui_warn "No AGENTS.md in this project yet — sync the template files first."
+    return
+  fi
+
+  if has_block "${agents}" "INTEGRATION" "trellis"; then
+    ui_warn "AGENTS.md currently carries the Trellis integration block."
+    if trellis_has_project "${project_dir}"; then
+      ui_info "This only edits AGENTS.md; Trellis itself stays set up. To take it out"
+      ui_info "of the project, pause or uninstall it from Trellis management."
+    fi
+    ask_yes_no "Remove it from AGENTS.md?" "no" || return
+    remove_trellis_block "${project_dir}"
+    return
+  fi
+
+  ui_info "AGENTS.md has no Trellis integration block."
+  ask_yes_no "Add it to AGENTS.md?" "yes" || return
+  add_trellis_block "${project_dir}"
 }
 
 # -----------------------------------------------------------------------------
@@ -945,6 +1081,10 @@ trellis_menu_note() {
   cli_version="$(trellis_cli_version || true)"
   if [[ -z "${cli_version}" ]]; then
     printf 'not installed\tbad\n'
+    return
+  fi
+  if trellis_is_paused "${project_dir}"; then
+    printf 'paused\ttodo\n'
     return
   fi
   if ! trellis_has_project "${project_dir}"; then
@@ -1025,7 +1165,7 @@ dashboard_actions() {
     prompt_opt sync "Sync template files" "templates" "${sync_level}" "${sync_note}"
     printf '\n'
   fi
-  prompt_opt trellis "Trellis management" "platforms, update, upgrade" \
+  prompt_opt trellis "Trellis management" "platforms, update, pause, uninstall" \
     "${trellis_level}" "${trellis_note}"; printf '\n'
   prompt_opt ccflow "Toggle CC-Workflow" "CC-Cowork-Workflow.md" \
     "${cc_level}" "${cc_active}"; printf '\n'
