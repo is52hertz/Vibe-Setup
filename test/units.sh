@@ -249,6 +249,13 @@ has "the subagent forbids touching the prompt" \
   "$(cat "${WORK}/set-base-cc/.claude/agents/codex-run.md")" "by path, never by value"
 has "the subagent defaults to read-only" \
   "$(cat "${WORK}/set-base-cc/.claude/agents/codex-run.md")" "no\` (read-only)"
+# The waiter is what makes a long job cost the same as a short one. Lose it and
+# the agent falls back to chunked waiting bounded by the foreground time limit,
+# which is the design this replaced.
+has "the subagent waits by arming a detached waiter" \
+  "$(cat "${WORK}/set-base-cc/.claude/agents/codex-run.md")" "run_in_background"
+has "and is told never to poll" \
+  "$(cat "${WORK}/set-base-cc/.claude/agents/codex-run.md")" "Never poll"
 
 # The variants are kept line-for-line so a change to one is visibly a change to
 # the other; equal length is the cheap proof that no edit landed in only one.

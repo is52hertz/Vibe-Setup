@@ -30,14 +30,14 @@ An **external executor** is a delegated coding/review backend (currently **Codex
 
 ## Delegating one unit — the only supported path
 
-`.claude/agents/codex-run.md` ships with this file. It is a courier: it launches one background Codex job, blocks on the companion's own `status --wait`, writes the result to disk, and reports paths. It never rewrites your prompt and never summarizes Codex's output.
+`.claude/agents/codex-run.md` ships with this file. It is a courier: it launches one background Codex job, arms a detached waiter that exits the instant the job reaches a terminal state, and then stops. Nothing polls — the waiter's exit is the event that wakes the subagent back up to write the result to disk and hand you the path. It never rewrites your prompt and never summarizes Codex's output.
 
 1. **Write the prompt to a file** — `<task-dir>/codex-<unit>-prompt.md`. It **must carry the relevant `.trellis/spec/**` context inline** (plus any project conventions and the exact files in scope): an executor cannot inherit this session's task context, so unfed context is simply lost.
 2. **Spawn `codex-run`** with a task text of plain `field: value` lines — `prompt-file:` and `result-dir:` are absolute paths and required; `write:` defaults to `no`; `model:` and `effort:` are omitted unless this run genuinely needs to pin them.
-3. **Read the result file yourself** (`<result-dir>/codex-<job-id>.result.md`). The subagent hands you a path, not a verdict. The full record — `touchedFiles`, thread id, failure text — sits next to it in `codex-<job-id>.result.json`.
+3. **Expect two hand-backs, and read the result file yourself.** The first says `launched, waiting` and is not the result — note the job id and get on with something else. The second arrives when the job is genuinely done; only then is `<result-dir>/codex-<job-id>.result.md` there to read, with the full record (`touchedFiles`, thread id, failure text) beside it in `codex-<job-id>.result.json`. The subagent hands you paths, never a verdict.
 4. **`write: yes` only when the unit really is "Codex edits the repo."** Reviews, diagnosis and research stay read-only; that is the default and it should stay the common case.
 
-Two properties make this safe to repeat, and both are worth protecting when editing this file: the prompt travels **by path, never by value**, so nothing can quietly reword it; and the result is **on disk before the subagent speaks**, so a lost or failed reply never costs you a finished job.
+Three properties make this safe to repeat, and all three are worth protecting when editing this file: the prompt travels **by path, never by value**, so nothing can quietly reword it; the result is **on disk before the subagent speaks**, so a lost or failed reply never costs you a finished job; and **nothing polls**, so a unit that takes four minutes and one that takes four hours cost the same number of turns and neither needs a timeout guessed in advance.
 
 ## Why not the plugin's own `codex:codex-rescue`
 
