@@ -91,7 +91,19 @@ vi "${d}" --trellis no --git no --dry-run
 has   "scaffold copies AGENTS.md"              "-> ${d}/AGENTS.md"
 hasnt "scaffold skips CC-Cowork-Workflow by default" "-> ${d}/CC-Cowork-Workflow.md"
 has   "scaffold copies settings.json"          "-> ${d}/.claude/settings.json"
+hasnt "scaffold skips the test checklist by default" "-> ${d}/Test/templates-test-checklist.html"
 has   "--git no skips git init"                "skip git init (per --git no)"
+
+# --- scaffold with --test-checklist yes ---
+d="$(sandbox)"
+vi "${d}" --trellis no --git no --test-checklist yes --dry-run
+has "--test-checklist yes copies the page"  "-> ${d}/Test/templates-test-checklist.html"
+has "and says so in the set label"          "test-checklist=on"
+
+# --- scaffold with invalid --test-checklist dies ---
+vi "$(sandbox)" --trellis no --git no --test-checklist bogus --dry-run
+rc_is "--test-checklist bogus dies" 1
+has   "--test-checklist bogus error message" "--test-checklist must be yes or no"
 
 # --- scaffold with --cc-workflow yes ---
 d="$(sandbox)"

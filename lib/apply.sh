@@ -601,6 +601,7 @@ show_project_diagnostics() {
   local trellis_level="off" trellis_state="Not configured" trellis_detail=""
   local plat_level="off"    plat_state="None"             plat_detail=""
   local cc_level="off"      cc_state="Disabled"           cc_detail=""
+  local list_level="off"    list_state="Not included"     list_detail=""
   # "Missing" is dim, not red: on a directory being seeded for the first time
   # both of these are absent and the sync is about to create them, so red here
   # would fire on the most ordinary run there is. The action shows up green in
@@ -671,6 +672,13 @@ show_project_diagnostics() {
     cc_state="Active"
   fi
 
+  # Test checklist. Absent is a choice, not a problem, so it reads off rather
+  # than todo — nothing here is waiting on the user.
+  if [[ -f "${project_dir}/Test/templates-test-checklist.html" ]]; then
+    list_level="ok"
+    list_state="Active"
+  fi
+
   # AGENTS.md / CLAUDE.md format. A legacy file has no <TAG> blocks for the
   # engine to edit; the conversion path is the ordinary sync (it writes the
   # .template) plus the end-of-run prompt for the project's AI agent.
@@ -702,6 +710,7 @@ show_project_diagnostics() {
   ui_kv_state "Trellis"     "${trellis_level}" "${trellis_state}" "${trellis_detail}"
   ui_kv_state "Platforms"   "${plat_level}"    "${plat_state}"    "${plat_detail}"
   ui_kv_state "CC-Workflow" "${cc_level}"      "${cc_state}"      "${cc_detail}"
+  ui_kv_state "Test checklist" "${list_level}" "${list_state}"    "${list_detail}"
   ui_kv_state "AGENTS.md"   "${agents_level}"  "${agents_state}"  "${agents_detail}"
   ui_kv_state "CLAUDE.md"   "${claude_level}"  "${claude_state}"  "${claude_detail}"
   if [[ "${agents_level}" == "todo" || "${claude_level}" == "todo" ]]; then
@@ -847,6 +856,53 @@ toggle_cc_workflow() {
   # Agent definitions are read when a session starts, so the file that just
   # landed is invisible to the session that asked for it.
   ui_info "Restart Claude Code once before calling codex-run — agent definitions load at session start."
+}
+
+# The manual test checklist, added or archived. A standalone HTML page with no
+# block in any other file, so unlike CC-Workflow there is nothing to unwire —
+# the file is the whole feature.
+toggle_test_checklist() {
+  local project_dir="$1"
+  local checklist="${project_dir}/Test/templates-test-checklist.html"
+  local source="${TEMPLATE_ROOT}/blocks/features/test-checklist/checklist.html"
+  local archived=""
+
+  if [[ -f "${checklist}" ]]; then
+    ui_warn "The test checklist is currently INCLUDED."
+    ask_yes_no "Remove it and archive the file?" "yes" || return
+
+    if [[ "${DRY_RUN}" -eq 1 ]]; then
+      ui_info "dry-run: mv ${checklist} -> ${checklist}.disabled"
+      return
+    fi
+
+    archived="$(archive_disabled "${checklist}")"
+    ui_ok "Archived the checklist as $(basename -- "${archived}")"
+    return
+  fi
+
+  ui_info "The test checklist is currently NOT INCLUDED."
+  ask_yes_no "Add the manual test checklist to this project?" "yes" || return
+
+  if [[ ! -f "${source}" ]]; then
+    ui_error "Test checklist template not found: ${source}"
+    return
+  fi
+
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    ui_info "dry-run: copy ${source} -> ${checklist}"
+    return
+  fi
+
+  ensure_dir "$(dirname -- "${checklist}")"
+  # The user's own page wins, the same contract every managed file gets.
+  if [[ -e "${checklist}" ]]; then
+    cp "${source}" "${checklist}.template"
+    ui_warn "Kept your existing checklist; the tool's copy is beside it as .template."
+  else
+    cp "${source}" "${checklist}"
+    ui_ok "Added Test/templates-test-checklist.html."
+  fi
 }
 
 # -----------------------------------------------------------------------------
@@ -1182,6 +1238,7 @@ syncall_menu_note() {
 dashboard_actions() {
   local project_dir="$1"
   local cc_level="neutral" cc_active="off"
+  local list_level="neutral" list_active="off"
   local integ_level="neutral" integ_active="off"
   local sync_note="" sync_level=""
   local trellis_note="" trellis_level=""
@@ -1191,6 +1248,10 @@ dashboard_actions() {
   if [[ -f "${project_dir}/CC-Cowork-Workflow.md" ]]; then
     cc_level="ok"
     cc_active="on"
+  fi
+  if [[ -f "${project_dir}/Test/templates-test-checklist.html" ]]; then
+    list_level="ok"
+    list_active="on"
   fi
   if has_block "${project_dir}/AGENTS.md" "INTEGRATION" "trellis"; then
     integ_level="ok"
@@ -1215,6 +1276,8 @@ dashboard_actions() {
     "${trellis_level}" "${trellis_note}"; printf '\n'
   prompt_opt ccflow "Toggle CC-Workflow" "CC-Cowork-Workflow.md" \
     "${cc_level}" "${cc_active}"; printf '\n'
+  prompt_opt checklist "Toggle test checklist" "Test/templates-test-checklist.html" \
+    "${list_level}" "${list_active}"; printf '\n'
   prompt_opt integ "Toggle Trellis block" "in AGENTS.md" \
     "${integ_level}" "${integ_active}"; printf '\n'
   if ! sync_has_work; then
@@ -1275,6 +1338,9 @@ orchestrator_dashboard() {
         ;;
       ccflow)
         toggle_cc_workflow "${project_dir}"
+        ;;
+      checklist)
+        toggle_test_checklist "${project_dir}"
         ;;
       integ)
         toggle_trellis_integration "${project_dir}"

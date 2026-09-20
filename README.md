@@ -2,8 +2,8 @@
 
 A small Bash CLI that bootstraps a project for AI-assisted development. It seeds
 a shared set of AI-agent instruction files (`AGENTS.md`, `CLAUDE.md`), a
-secrets-deny Claude Code settings file, and a manual test checklist — and can
-optionally install and initialize [Trellis](https://www.npmjs.com/package/@mindfoldhq/trellis).
+secrets-deny Claude Code settings file, and optional extras such as a manual
+test checklist — and can optionally install and initialize [Trellis](https://www.npmjs.com/package/@mindfoldhq/trellis).
 The files under `templates/` are the source of truth the script assembles each
 project's files from.
 
@@ -146,6 +146,7 @@ itself:
 | `--profile service\|tool\|ask` | Profile for a new project: `service` or `tool` assembles `AGENTS.md` with just that rule set; `ask` (the `-y` / non-TTY default) keeps all of them for the project's AI agent to resolve. Not valid with `--apply`. |
 | `--trellis yes\|no` | Whether to install/initialize Trellis. |
 | `--cc-workflow yes\|no` | Whether to include `CC-Cowork-Workflow.md` and its `CLAUDE.md` reference (default: no). With `--apply`, the default follows the project: the file is offered only if the project already has it. |
+| `--test-checklist yes\|no` | Whether to include `Test/templates-test-checklist.html`, the standalone manual-test page (default: no). With `--apply`, the default follows the project the same way. |
 | `--developer-name NAME` | Developer identity passed to `trellis init -u NAME`. Defaults to `$DEVELOPER_NAME`, then `git config user.name`, then `$USER`. |
 | `--platforms "FLAGS"` | Trellis platform flags, e.g. `"--claude --codex"`. `none` passes no platform flags. |
 | `--template-dir DIR` | Override the template root — the directory holding `blocks/` and `common/` (default: `templates/` next to the script). |
@@ -164,7 +165,7 @@ itself:
 | `CLAUDE.md` | Imports `AGENTS.md`; holds Claude Code-specific instructions only when needed. |
 | `CC-Cowork-Workflow.md` | Optional (`--cc-workflow yes`): how Claude Code delegates execution and review to an external executor. |
 | `.claude/settings.json` | Denies agents from reading secrets (`.env*`, `secrets/**`, `*.pem`/`*.key`/`*.p12`/`*.pfx`). |
-| `Test/templates-test-checklist.html` | A manual test checklist. |
+| `Test/templates-test-checklist.html` | Optional (`--test-checklist yes`): a standalone manual test checklist page. |
 | `.vibe-init/` | `manifest`: what vibe-init last wrote, as content hashes — the merge base for `--apply`. `pending/`: the templates handed out as `.template`, until their merge is done. Added to `.gitignore` in a git project. |
 
 ## Templates
@@ -175,11 +176,13 @@ There is one set of templates, assembled per run rather than copied as-is:
   `metadata`, `product`, `project_phase`, `core_rules`, then the profile
   (`profiles/`, plus `profile_setup` when the profile is `ask`), then any
   integrations (`integrations/`, e.g. Trellis). `features/cc-workflow/` holds
-  `CC-Cowork-Workflow.md` — a plain and a Trellis variant — and the block it adds
-  to `CLAUDE.md`.
-- **`templates/common/`** — the static files: `.claude/settings.json`, the test
-  checklist, and the `CLAUDE.md` skeleton (the CC-Workflow block, when on, is
-  appended to it).
+  `CC-Cowork-Workflow.md` — a plain and a Trellis variant — the `codex-run`
+  subagent it delegates through, and the block it adds to `CLAUDE.md`;
+  `features/test-checklist/` holds the manual test page.
+- **`templates/common/`** — the static files every project gets:
+  `.claude/settings.json` and the `CLAUDE.md` skeleton (the CC-Workflow block,
+  when on, is appended to it). Anything optional lives under `features/`
+  instead, because `common/` is copied whole and cannot be switched off.
 
 Adding a profile or an integration is dropping a file into `profiles/` or
 `integrations/`; nothing in the script lists them. Because every block is

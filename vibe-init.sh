@@ -32,6 +32,12 @@ APPLY_MODE=0
 # the target project already has.
 CC_WORKFLOW_CHOICE=""
 CC_WORKFLOW_ENABLED=0
+# Whether the scaffolded project gets Test/templates-test-checklist.html, the
+# standalone manual-test page. Same shape as CC-Workflow: empty CHOICE means
+# "ask" (default no), --test-checklist yes|no sets it non-interactively, and in
+# apply mode an unset choice follows what the target project already has.
+TEST_CHECKLIST_CHOICE=""
+TEST_CHECKLIST_ENABLED=0
 
 # Source helper modules
 [[ -f "${SCRIPT_DIR}/lib/ui.sh" ]] && . "${SCRIPT_DIR}/lib/ui.sh"
@@ -134,6 +140,10 @@ Options:
   --cc-workflow yes|no     Whether to include CC-Cowork-Workflow (default: no).
                            With --apply, the default follows the target project:
                            the file is offered only if the project already has it.
+  --test-checklist yes|no  Whether to include Test/templates-test-checklist.html,
+                           the standalone manual-test page (default: no).
+                           With --apply, the default follows the target project:
+                           the file is offered only if the project already has it.
   --developer-name NAME    Developer identity passed to: trellis init -u NAME.
                            Defaults to \$DEVELOPER_NAME, then git user.name, then \$USER.
   --platforms "FLAGS"      Trellis platform flags, for example: "--claude --codex".
@@ -228,6 +238,16 @@ while [[ $# -gt 0 ]]; do
     --cc-workflow=*)
       CC_WORKFLOW_CHOICE="${1#*=}"
       require_arg "--cc-workflow" "${CC_WORKFLOW_CHOICE}"
+      shift
+      ;;
+    --test-checklist)
+      require_arg "$1" "${2:-}"
+      TEST_CHECKLIST_CHOICE="$2"
+      shift 2
+      ;;
+    --test-checklist=*)
+      TEST_CHECKLIST_CHOICE="${1#*=}"
+      require_arg "--test-checklist" "${TEST_CHECKLIST_CHOICE}"
       shift
       ;;
     --git)
@@ -853,6 +873,7 @@ prepare_template_set() {
   local profile="$1"
   local integrations="$2"
   local enable_cc="$3"
+  local enable_checklist="${4:-0}"
   local tmp_root="${TMPDIR:-/tmp}"
 
   if [[ ! -d "${TEMPLATE_ROOT}/blocks" ]]; then
@@ -866,7 +887,7 @@ prepare_template_set() {
     || die "could not create a staging directory for the template set"
 
   TEMPLATE_DIR="${TEMPLATE_STAGE_DIR}"
-  materialize_template_set "${TEMPLATE_DIR}" "${profile}" "${integrations}" "${enable_cc}"
+  materialize_template_set "${TEMPLATE_DIR}" "${profile}" "${integrations}" "${enable_cc}" "${enable_checklist}"
 
   TEMPLATE_SET_LABEL="profile=${profile}"
   if [[ -n "${integrations}" ]]; then
@@ -876,6 +897,11 @@ prepare_template_set() {
     TEMPLATE_SET_LABEL="${TEMPLATE_SET_LABEL}, cc-workflow=on"
   else
     TEMPLATE_SET_LABEL="${TEMPLATE_SET_LABEL}, cc-workflow=off"
+  fi
+  if [[ "${enable_checklist}" -eq 1 ]]; then
+    TEMPLATE_SET_LABEL="${TEMPLATE_SET_LABEL}, test-checklist=on"
+  else
+    TEMPLATE_SET_LABEL="${TEMPLATE_SET_LABEL}, test-checklist=off"
   fi
 }
 
@@ -966,6 +992,36 @@ resolve_cc_workflow() {
   fi
 }
 
+# Resolve whether this run includes the manual test checklist, and echo 1 or 0.
+# Same contract as resolve_cc_workflow: --test-checklist wins; otherwise -y /
+# non-TTY default to off and an interactive run is prompted (default no — it is
+# a page the user fills in by hand, not something every project wants sitting
+# in its tree unused).
+resolve_test_checklist() {
+  local normalized=""
+
+  if [[ -n "${TEST_CHECKLIST_CHOICE}" ]]; then
+    normalized="$(normalize_yes_no "${TEST_CHECKLIST_CHOICE}")" || die "--test-checklist must be yes or no"
+    if [[ "${normalized}" == "yes" ]]; then
+      printf '1\n'
+    else
+      printf '0\n'
+    fi
+    return
+  fi
+
+  if [[ "${ASSUME_DEFAULTS}" -eq 1 || ! -t 0 ]]; then
+    printf '0\n'
+    return
+  fi
+
+  if ask_yes_no "Include the manual test checklist (Test/templates-test-checklist.html)?" "no"; then
+    printf '1\n'
+  else
+    printf '0\n'
+  fi
+}
+
 write_project_placeholders() {
   local project_dir="$1"
 
@@ -981,7 +1037,12 @@ write_project_placeholders() {
     copy_optional_template ".claude/agents/codex-run.md" "${project_dir}/.claude/agents/codex-run.md"
   fi
   copy_or_write_placeholder ".claude/settings.json" "${project_dir}/.claude/settings.json" "$(claude_settings_placeholder)"
-  copy_optional_template "Test/templates-test-checklist.html" "${project_dir}/Test/templates-test-checklist.html"
+  # Guarded the same way as the CC-Workflow files: only in the materialized set
+  # when the feature is on, so an opt-out reads as a choice rather than as a
+  # missing template.
+  if [[ "${TEST_CHECKLIST_ENABLED}" -eq 1 ]]; then
+    copy_optional_template "Test/templates-test-checklist.html" "${project_dir}/Test/templates-test-checklist.html"
+  fi
 }
 
 # Record what the scaffold just wrote into .vibe-init/manifest. This is the whole
@@ -999,6 +1060,11 @@ record_scaffold_state() {
     STATE_SET_CC="on"
   else
     STATE_SET_CC="off"
+  fi
+  if [[ "${TEST_CHECKLIST_ENABLED}" -eq 1 ]]; then
+    STATE_SET_CHECKLIST="on"
+  else
+    STATE_SET_CHECKLIST="off"
   fi
 
   for rel in "${TEMPLATE_FILES[@]}"; do
@@ -1077,10 +1143,19 @@ run_apply_mode() {
   if [[ -n "${CC_WORKFLOW_CHOICE}" ]]; then
     CC_WORKFLOW_ENABLED="$(resolve_cc_workflow)"
   fi
+  # Same rule for the checklist, and by the file rather than the manifest: a
+  # project scaffolded before the checklist was optional has no such header,
+  # and the file on disk is the honest answer either way.
+  if [[ -f "${target_dir}/Test/templates-test-checklist.html" ]]; then
+    TEST_CHECKLIST_ENABLED=1
+  fi
+  if [[ -n "${TEST_CHECKLIST_CHOICE}" ]]; then
+    TEST_CHECKLIST_ENABLED="$(resolve_test_checklist)"
+  fi
 
   # Apply mode never prunes profiles: the project's AI resolves that from the
   # codebase, which is also why --profile is rejected with --apply.
-  prepare_template_set "ask" "${TEMPLATE_INTEGRATIONS}" "${CC_WORKFLOW_ENABLED}"
+  prepare_template_set "ask" "${TEMPLATE_INTEGRATIONS}" "${CC_WORKFLOW_ENABLED}" "${TEST_CHECKLIST_ENABLED}"
 
   ui_intro "vibe-init" "project orchestrator"
 
@@ -1123,6 +1198,9 @@ main() {
   # the run creates directories or prompts for anything.
   if [[ -n "${CC_WORKFLOW_CHOICE}" ]]; then
     normalize_yes_no "${CC_WORKFLOW_CHOICE}" >/dev/null || die "--cc-workflow must be yes or no"
+  fi
+  if [[ -n "${TEST_CHECKLIST_CHOICE}" ]]; then
+    normalize_yes_no "${TEST_CHECKLIST_CHOICE}" >/dev/null || die "--test-checklist must be yes or no"
   fi
 
   if [[ "${PROJECT_NAME_POSITIONAL}" -eq 1 && "${APPLY_MODE}" -eq 1 ]]; then
@@ -1172,8 +1250,9 @@ main() {
   profile="$(resolve_profile)"
 
   CC_WORKFLOW_ENABLED="$(resolve_cc_workflow)"
+  TEST_CHECKLIST_ENABLED="$(resolve_test_checklist)"
 
-  prepare_template_set "${profile}" "${TEMPLATE_INTEGRATIONS}" "${CC_WORKFLOW_ENABLED}"
+  prepare_template_set "${profile}" "${TEMPLATE_INTEGRATIONS}" "${CC_WORKFLOW_ENABLED}" "${TEST_CHECKLIST_ENABLED}"
   info "template set: ${TEMPLATE_SET_LABEL}"
 
   if [[ "${install_trellis}" -eq 1 ]]; then

@@ -257,6 +257,23 @@ has "the subagent waits by arming a detached waiter" \
 has "and is told never to poll" \
   "$(cat "${WORK}/set-base-cc/.claude/agents/codex-run.md")" "Never poll"
 
+# The manual test checklist is a feature, not part of common/ — a project that
+# never opens one should not carry it. common/ is copied whole, so the only way
+# to make it optional was to move it out of there.
+materialize_template_set "${WORK}/set-list-on" "tool" "" 0 1
+if [[ -f "${WORK}/set-list-on/Test/templates-test-checklist.html" ]]; then
+  ok "the checklist is in the set when asked for"
+else
+  ko "the checklist is in the set when asked for" "no Test/templates-test-checklist.html"
+fi
+if [[ -f "${WORK}/set-plain/Test/templates-test-checklist.html" ]]; then
+  ko "and stays out of it when not" "the file is there"
+else
+  ok "and stays out of it when not"
+fi
+has "the checklist that ships is the real page" \
+  "$(head -3 "${WORK}/set-list-on/Test/templates-test-checklist.html")" "<!DOCTYPE html>"
+
 # The variants are kept line-for-line so a change to one is visibly a change to
 # the other; equal length is the cheap proof that no edit landed in only one.
 base_lines="$(wc -l < "${TEMPLATE_ROOT}/blocks/features/cc-workflow/base.md" | tr -d ' ')"
@@ -682,11 +699,11 @@ mkdir -p "${MENUPROJ}"
 
 SYNC_N_NEW=0 SYNC_N_UPDATE=0 SYNC_N_REVIEW=0 SYNC_N_LEGACY=0
 is "with nothing to sync, sync drops below the toggles" \
-  "$(menu_order "${MENUPROJ}")" "trellis ccflow integ sync syncall quit "
+  "$(menu_order "${MENUPROJ}")" "trellis ccflow checklist integ sync syncall quit "
 
 SYNC_N_REVIEW=2
 is "with work to do, sync leads the menu" \
-  "$(menu_order "${MENUPROJ}")" "sync trellis ccflow integ syncall quit "
+  "$(menu_order "${MENUPROJ}")" "sync trellis ccflow checklist integ syncall quit "
 SYNC_N_REVIEW=0
 
 # Each toggle reports the state the project is actually in.
@@ -702,6 +719,18 @@ is "and takes the ok level"                  "${PROMPT_HINT_LEVEL}" "ok"
 _prompt_split "$(dashboard_actions "${MENUPROJ}" "" "" | grep -F 'integ')"
 is "the Trellis block reports itself present" "${PROMPT_ACTIVE}"    "on"
 is "while its hint stays put"                 "${PROMPT_HINT}"      "in AGENTS.md"
+# The checklist is a file with no block anywhere, so presence is the whole
+# state — and absent must read as a choice (neutral), never as something due.
+_prompt_split "$(dashboard_actions "${MENUPROJ}" "" "" | grep -F 'checklist')"
+is "an absent checklist reads off"            "${PROMPT_ACTIVE}"     "off"
+is "and reads neutral, not dim"               "${PROMPT_HINT_LEVEL}" "neutral"
+is "while its hint names the file"            "${PROMPT_HINT}"       "Test/templates-test-checklist.html"
+mkdir -p "${MENUPROJ}/Test"
+printf 'checklist\n' > "${MENUPROJ}/Test/templates-test-checklist.html"
+_prompt_split "$(dashboard_actions "${MENUPROJ}" "" "" | grep -F 'checklist')"
+is "a present checklist reads on"             "${PROMPT_ACTIVE}"     "on"
+is "and takes the ok level"                   "${PROMPT_HINT_LEVEL}" "ok"
+rm -rf "${MENUPROJ}/Test"
 PATH="${PATH_BEFORE_FAKE}"
 
 # --- every ui_* the tool calls has to exist ---------------------------------

@@ -252,13 +252,14 @@ cc_workflow_variant() {
 # templates/common/, plus the two assembled files, plus the CC-Workflow document
 # when that feature is on. Everything downstream (scaffold copies and apply mode)
 # reads from the result, so there is exactly one place where a variant is decided.
-# Usage: materialize_template_set <out_dir> <profile> <integrations_csv> <enable_cc>
+# Usage: materialize_template_set <out_dir> <profile> <integrations_csv> <enable_cc> <enable_checklist>
 materialize_template_set() {
   local out_dir="$1"
   local profile="${2:-ask}"
   local integrations_csv="${3:-}"
   local enable_cc="${4:-0}"
-  local common="" cc_src="" agent_src=""
+  local enable_checklist="${5:-0}"
+  local common="" cc_src="" agent_src="" checklist_src=""
 
   common="$(common_root)"
   mkdir -p "${out_dir}"
@@ -293,6 +294,19 @@ materialize_template_set() {
       cp "${agent_src}" "${out_dir}/.claude/agents/codex-run.md"
     else
       warn "CC-Workflow subagent template not found: ${agent_src}"
+    fi
+  fi
+
+  # The manual test checklist: a standalone HTML page the user fills in by hand.
+  # Plenty of projects never open one, so it is a feature rather than part of
+  # common/ — which is copied whole and cannot be switched off.
+  if [[ "${enable_checklist}" -eq 1 ]]; then
+    checklist_src="$(blocks_root)/features/test-checklist/checklist.html"
+    if [[ -f "${checklist_src}" ]]; then
+      mkdir -p "${out_dir}/Test"
+      cp "${checklist_src}" "${out_dir}/Test/templates-test-checklist.html"
+    else
+      warn "test checklist template not found: ${checklist_src}"
     fi
   fi
 }
