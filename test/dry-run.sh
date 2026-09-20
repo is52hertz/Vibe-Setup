@@ -97,6 +97,7 @@ has   "--git no skips git init"                "skip git init (per --git no)"
 d="$(sandbox)"
 vi "${d}" --trellis no --git no --cc-workflow yes --dry-run
 has "scaffold with --cc-workflow yes copies file" "-> ${d}/CC-Cowork-Workflow.md"
+has "and the subagent the file delegates through" "-> ${d}/.claude/agents/codex-run.md"
 
 # --- scaffold with invalid --cc-workflow dies ---
 vi "$(sandbox)" --trellis no --git no --cc-workflow bogus --dry-run
@@ -313,6 +314,14 @@ if [[ -f "${d}/CLAUDE.md" ]] && grep -q "CC-Cowork-Workflow.md" "${d}/CLAUDE.md"
   ok "scaffold --cc-workflow yes CLAUDE.md includes reference"
 else
   ko "scaffold --cc-workflow yes CLAUDE.md includes reference" "CLAUDE.md missing CC-workflow reference"
+fi
+
+# A dry run only prints the copy; this is the one place that proves the agent
+# file reaches disk, under the name the workflow document tells Claude to call.
+if [[ -f "${d}/.claude/agents/codex-run.md" ]]; then
+  ok "scaffold --cc-workflow yes creates the delegation subagent"
+else
+  ko "scaffold --cc-workflow yes creates the delegation subagent" ".claude/agents/codex-run.md was not created"
 fi
 
 # --- real scaffold with --profile service ---

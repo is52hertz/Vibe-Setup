@@ -258,7 +258,7 @@ materialize_template_set() {
   local profile="${2:-ask}"
   local integrations_csv="${3:-}"
   local enable_cc="${4:-0}"
-  local common="" cc_src=""
+  local common="" cc_src="" agent_src=""
 
   common="$(common_root)"
   mkdir -p "${out_dir}"
@@ -283,6 +283,16 @@ materialize_template_set() {
       cp "${cc_src}" "${out_dir}/CC-Cowork-Workflow.md"
     else
       warn "CC-Workflow template not found: ${cc_src}"
+    fi
+
+    # The delegation subagent the document calls. Variant-independent: the loop
+    # around it changes with Trellis, the courier itself does not.
+    agent_src="$(blocks_root)/features/cc-workflow/agent.md"
+    if [[ -f "${agent_src}" ]]; then
+      mkdir -p "${out_dir}/.claude/agents"
+      cp "${agent_src}" "${out_dir}/.claude/agents/codex-run.md"
+    else
+      warn "CC-Workflow subagent template not found: ${agent_src}"
     fi
   fi
 }

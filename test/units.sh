@@ -223,6 +223,43 @@ has "a trellis set gets the trellis variant" "$(cat "${WORK}/set-trellis/CC-Cowo
 materialize_template_set "${WORK}/set-base-cc" "tool" "" 1
 hasnt "a plain set gets the plain variant" "$(cat "${WORK}/set-base-cc/CC-Cowork-Workflow.md")" "trellis-check"
 
+# The document delegates through the subagent, so the feature has to be one
+# thing: a project that got the doc without the agent reads instructions for a
+# tool it does not have.
+if [[ -f "${WORK}/set-base-cc/.claude/agents/codex-run.md" \
+   && -f "${WORK}/set-trellis/.claude/agents/codex-run.md" ]]; then
+  ok "cc-workflow on ships the delegation subagent too"
+else
+  ko "cc-workflow on ships the delegation subagent too" "no .claude/agents/codex-run.md in the set"
+fi
+if [[ -f "${WORK}/set-plain/.claude/agents/codex-run.md" ]]; then
+  ko "cc-workflow off keeps the subagent out" "the file is there"
+else
+  ok "cc-workflow off keeps the subagent out"
+fi
+# The name in the frontmatter is what the Agent tool is called with; the
+# document names `codex-run`, and a rename on one side alone breaks the flow.
+has "the subagent answers to the name the doc uses" \
+  "$(cat "${WORK}/set-base-cc/.claude/agents/codex-run.md")" "name: codex-run"
+has "the doc points at the agent file it ships" \
+  "$(cat "${WORK}/set-base-cc/CC-Cowork-Workflow.md")" ".claude/agents/codex-run.md"
+# The courier's two load-bearing defaults. Losing either is how the old flow
+# went wrong: a rewritten prompt, or a write-capable run nobody asked for.
+has "the subagent forbids touching the prompt" \
+  "$(cat "${WORK}/set-base-cc/.claude/agents/codex-run.md")" "by path, never by value"
+has "the subagent defaults to read-only" \
+  "$(cat "${WORK}/set-base-cc/.claude/agents/codex-run.md")" "no\` (read-only)"
+
+# The variants are kept line-for-line so a change to one is visibly a change to
+# the other; equal length is the cheap proof that no edit landed in only one.
+base_lines="$(wc -l < "${TEMPLATE_ROOT}/blocks/features/cc-workflow/base.md" | tr -d ' ')"
+trellis_lines="$(wc -l < "${TEMPLATE_ROOT}/blocks/features/cc-workflow/trellis.md" | tr -d ' ')"
+is "both workflow variants stay the same length" "${base_lines}" "${trellis_lines}"
+# The repo keeps its own copy of the workflow document at the root, for this
+# project's agents. Nothing syncs it, so the test is what keeps it honest.
+files_match "the repo's own copy matches the template" \
+  "${REPO_ROOT}/CC-Cowork-Workflow.md" "${TEMPLATE_ROOT}/blocks/features/cc-workflow/base.md"
+
 # --- the renderer ---------------------------------------------------------
 # Nothing may put a newline inside a status row: one there breaks the layout,
 # and `git rev-parse` on a repository with no commits returns exactly that.

@@ -739,7 +739,9 @@ toggle_cc_workflow() {
   local project_dir="$1"
   local claude_md="${project_dir}/CLAUDE.md"
   local workflow="${project_dir}/CC-Cowork-Workflow.md"
+  local agent="${project_dir}/.claude/agents/codex-run.md"
   local ref_block="${TEMPLATE_ROOT}/blocks/features/cc-workflow/claude-ref.md"
+  local agent_src="${TEMPLATE_ROOT}/blocks/features/cc-workflow/agent.md"
   local variant="" source=""
 
   if [[ -f "${workflow}" ]]; then
@@ -748,12 +750,19 @@ toggle_cc_workflow() {
 
     if [[ "${DRY_RUN}" -eq 1 ]]; then
       ui_info "dry-run: mv ${workflow} -> ${workflow}.disabled"
+      [[ -f "${agent}" ]] && ui_info "dry-run: mv ${agent} -> ${agent}.disabled"
       ui_info "dry-run: remove the CC-Workflow block from ${claude_md}"
       return
     fi
 
     mv "${workflow}" "${workflow}.disabled"
     ui_ok "Archived the workflow file as CC-Cowork-Workflow.md.disabled"
+    # Archive rather than delete, for the same reason as the document: the user
+    # may have tuned it, and a disabled feature should be recoverable.
+    if [[ -f "${agent}" ]]; then
+      mv "${agent}" "${agent}.disabled"
+      ui_ok "Archived the delegation subagent as codex-run.md.disabled"
+    fi
 
     if [[ ! -f "${claude_md}" ]]; then
       return
@@ -787,11 +796,19 @@ toggle_cc_workflow() {
 
   if [[ "${DRY_RUN}" -eq 1 ]]; then
     ui_info "dry-run: copy ${source} -> ${workflow}"
+    ui_info "dry-run: copy ${agent_src} -> ${agent}"
     ui_info "dry-run: reference the CC-Workflow block from ${claude_md}"
     return
   fi
 
   cp "${source}" "${workflow}"
+  if [[ -f "${agent_src}" ]]; then
+    ensure_dir "$(dirname -- "${agent}")"
+    cp "${agent_src}" "${agent}"
+  else
+    ui_warn "Delegation subagent template not found: ${agent_src}"
+    ui_warn "The workflow document will point at an agent this project does not have."
+  fi
   if [[ -f "${claude_md}" ]]; then
     append_block_if_missing "${claude_md}" "FEATURE" "cc-workflow" "${ref_block}"
   else

@@ -59,6 +59,7 @@ TEMPLATE_FILES=(
   "AGENTS.md"
   "CLAUDE.md"
   "CC-Cowork-Workflow.md"
+  ".claude/agents/codex-run.md"
   ".claude/settings.json"
   "Test/templates-test-checklist.html"
 )
@@ -975,6 +976,9 @@ write_project_placeholders() {
   # opt-out reads as a choice rather than as a missing template.
   if [[ "${CC_WORKFLOW_ENABLED}" -eq 1 ]]; then
     copy_optional_template "CC-Cowork-Workflow.md" "${project_dir}/CC-Cowork-Workflow.md"
+    # The workflow document delegates through this subagent, so the two ship and
+    # retire together — a document pointing at an absent agent is worse than neither.
+    copy_optional_template ".claude/agents/codex-run.md" "${project_dir}/.claude/agents/codex-run.md"
   fi
   copy_or_write_placeholder ".claude/settings.json" "${project_dir}/.claude/settings.json" "$(claude_settings_placeholder)"
   copy_optional_template "Test/templates-test-checklist.html" "${project_dir}/Test/templates-test-checklist.html"
