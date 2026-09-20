@@ -735,6 +735,24 @@ record_block_as_written() {
 # A CLAUDE.md written before the block markers existed carries the reference as
 # plain prose. That cannot be removed safely by machine, so it is reported for
 # the user to delete rather than silently left behind as a dangling pointer.
+# Move a file aside as <file>.disabled without ever clobbering an earlier
+# archive. Disabling a feature twice would otherwise destroy what the first
+# disable saved — the one copy of the user's own edits. Echoes the path used.
+# Usage: archive_disabled <file>
+archive_disabled() {
+  local file="$1"
+  local target="${file}.disabled"
+  local n=2
+
+  while [[ -e "${target}" ]]; do
+    target="${file}.disabled.${n}"
+    n=$(( n + 1 ))
+  done
+
+  mv "${file}" "${target}"
+  printf '%s\n' "${target}"
+}
+
 toggle_cc_workflow() {
   local project_dir="$1"
   local claude_md="${project_dir}/CLAUDE.md"
@@ -742,7 +760,7 @@ toggle_cc_workflow() {
   local agent="${project_dir}/.claude/agents/codex-run.md"
   local ref_block="${TEMPLATE_ROOT}/blocks/features/cc-workflow/claude-ref.md"
   local agent_src="${TEMPLATE_ROOT}/blocks/features/cc-workflow/agent.md"
-  local variant="" source=""
+  local variant="" source="" archived=""
 
   if [[ -f "${workflow}" ]]; then
     ui_warn "CC-Workflow is currently ENABLED."
@@ -755,13 +773,13 @@ toggle_cc_workflow() {
       return
     fi
 
-    mv "${workflow}" "${workflow}.disabled"
-    ui_ok "Archived the workflow file as CC-Cowork-Workflow.md.disabled"
+    archived="$(archive_disabled "${workflow}")"
+    ui_ok "Archived the workflow file as $(basename -- "${archived}")"
     # Archive rather than delete, for the same reason as the document: the user
     # may have tuned it, and a disabled feature should be recoverable.
     if [[ -f "${agent}" ]]; then
-      mv "${agent}" "${agent}.disabled"
-      ui_ok "Archived the delegation subagent as codex-run.md.disabled"
+      archived="$(archive_disabled "${agent}")"
+      ui_ok "Archived the delegation subagent as $(basename -- "${archived}")"
     fi
 
     if [[ ! -f "${claude_md}" ]]; then
@@ -804,7 +822,15 @@ toggle_cc_workflow() {
   cp "${source}" "${workflow}"
   if [[ -f "${agent_src}" ]]; then
     ensure_dir "$(dirname -- "${agent}")"
-    cp "${agent_src}" "${agent}"
+    # The workflow document is known absent on this branch, but the agent file
+    # is not: a user can carry their own codex-run.md with no workflow document
+    # at all. Theirs wins, and the tool's copy lands beside it.
+    if [[ -e "${agent}" ]]; then
+      cp "${agent_src}" "${agent}.template"
+      ui_warn "Kept your existing codex-run.md; the tool's copy is beside it as codex-run.md.template."
+    else
+      cp "${agent_src}" "${agent}"
+    fi
   else
     ui_warn "Delegation subagent template not found: ${agent_src}"
     ui_warn "The workflow document will point at an agent this project does not have."
@@ -818,6 +844,9 @@ toggle_cc_workflow() {
   # next sync would see an unrecorded block and call our own edit a conflict.
   record_block_as_written "${project_dir}" "CLAUDE.md" "FEATURE" "cc-workflow"
   ui_ok "CC-Workflow enabled (${variant} variant) and referenced from CLAUDE.md."
+  # Agent definitions are read when a session starts, so the file that just
+  # landed is invisible to the session that asked for it.
+  ui_info "Restart Claude Code once before calling codex-run — agent definitions load at session start."
 }
 
 # -----------------------------------------------------------------------------

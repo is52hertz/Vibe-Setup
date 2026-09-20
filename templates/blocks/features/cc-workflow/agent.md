@@ -108,12 +108,15 @@ result will be at: <result-dir>/codex-<job-id>.result.md
 waiter task: <the background task id from step 2>
 ```
 
-Then **stop**. Do not check on it. Do not read anything. Do not wait.
+**Your turn ends on that message.** Do not look at the waiter's output in this
+turn — it is empty until the waiter exits, and checking it is exactly the
+polling this design removes. Step 4 belongs to a later turn, not this one.
 
-## Step 4 — when you are resumed
+## Step 4 — only in a NEW turn, after the waiter has exited
 
-The runtime resumes you once the waiter exits. `cat` the waiter's output file
-(the path the step-2 call returned) and report what it says, at most four lines:
+The runtime resumes you once the waiter exits; that resumption is the only
+thing that starts this step. `cat` the waiter's output file (the path the
+step-2 call returned) and report what it says, at most four lines:
 
 ```
 codex-run: <completed|failed|cancelled> <job-id>

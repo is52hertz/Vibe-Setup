@@ -817,6 +817,49 @@ is "re-recording a block replaces it"    "$(state_block_hash "${PROJ}" "AGENTS.m
 is "an untouched block keeps its base"   "$(state_block_hash "${PROJ}" "AGENTS.md" "PROFILE" "tool")" "hash-tool-1"
 is "an untouched file keeps its base"    "$(state_file_hash  "${PROJ}" "AGENTS.md")" "hash-file-1"
 
+# A run can stage no records at all and still flush: record_trellis_state sets
+# one header field and writes. The merge awk keyed on NR == FNR, which with an
+# empty staging file matched every line of the manifest instead — so pausing
+# Trellis silently dropped every hash and took the merge base with it, leaving
+# the next sync to call every file a conflict.
+STATE_RECORDS=()
+STATE_SET_TRELLIS="paused"
+state_flush "${PROJ}"
+STATE_SET_TRELLIS=""
+is "a flush with nothing staged keeps file hashes"  "$(state_file_hash  "${PROJ}" "AGENTS.md")" "hash-file-1"
+is "and keeps block hashes"                         "$(state_block_hash "${PROJ}" "AGENTS.md" "PROFILE" "tool")" "hash-tool-1"
+is "and still writes the header it came for"        "$(state_get "${PROJ}" trellis)" "paused"
+
+# Disabling a feature twice must not destroy what the first disable saved —
+# that archive is the only copy of the user's own edits.
+ARCH="${WORK}/arch"
+mkdir -p "${ARCH}"
+printf 'first\n' > "${ARCH}/codex-run.md"
+arch1="$(archive_disabled "${ARCH}/codex-run.md")"
+printf 'second\n' > "${ARCH}/codex-run.md"
+arch2="$(archive_disabled "${ARCH}/codex-run.md")"
+is "the first archive takes the plain name" "$(basename -- "${arch1}")" "codex-run.md.disabled"
+is "a second archive steps aside"           "$(basename -- "${arch2}")" "codex-run.md.disabled.2"
+is "so the first archive survives"          "$(cat "${ARCH}/codex-run.md.disabled")" "first"
+
+# Enabling CC-Workflow must not overwrite a codex-run.md the user already
+# carries. Theirs wins and the tool's copy lands beside it, the same contract
+# every other managed file gets.
+CCP="${WORK}/ccproj"
+mkdir -p "${CCP}/.claude/agents"
+printf 'mine\n' > "${CCP}/.claude/agents/codex-run.md"
+(
+  ask_yes_no() { true; }
+  ensure_dir() { mkdir -p "$1"; }
+  toggle_cc_workflow "${CCP}"
+) >/dev/null 2>&1
+is "enabling keeps the user's own subagent" "$(cat "${CCP}/.claude/agents/codex-run.md")" "mine"
+if [[ -f "${CCP}/.claude/agents/codex-run.md.template" ]]; then
+  ok "and leaves the tool's copy as .template"
+else
+  ko "and leaves the tool's copy as .template" "no .template beside it"
+fi
+
 is "an untracked project reports no version" "$(state_get "${WORK}" version)" ""
 if state_is_tracked "${WORK}"; then ko "a project with no manifest is untracked" "reported tracked"; else ok "a project with no manifest is untracked"; fi
 

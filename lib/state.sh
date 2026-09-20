@@ -253,8 +253,13 @@ state_flush() {
     # ones. Sorted so a manifest diff stays readable.
     {
       if [[ -f "${manifest}" ]]; then
+        # FILENAME == ARGV[1], not NR == FNR: a run can stage nothing at all
+        # (record_trellis_state only sets a header field), and with an empty
+        # first file NR == FNR stays true for every line of the second one —
+        # which silently dropped every hash in the manifest and took the merge
+        # base with it, turning the next sync's every file into a conflict.
         awk -F'\t' '
-          NR == FNR {
+          FILENAME == ARGV[1] {
             if ($1 == "file")       seen[$1 FS $2] = 1
             else if ($1 == "block") seen[$1 FS $2 FS $3 FS $4] = 1
             next

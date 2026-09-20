@@ -30,7 +30,7 @@ An **external executor** is a delegated coding/review backend (currently **Codex
 
 ## Delegating one unit — the only supported path
 
-`.claude/agents/codex-run.md` ships with this file. It is a courier: it launches one background Codex job, arms a detached waiter that exits the instant the job reaches a terminal state, and then stops. Nothing polls — the waiter's exit is the event that wakes the subagent back up to write the result to disk and hand you the path. It never rewrites your prompt and never summarizes Codex's output.
+`.claude/agents/codex-run.md` ships with this file. It is a courier: it launches one background Codex job, arms a detached waiter that exits the instant the job reaches a terminal state, and then stops. Nothing polls — the waiter's exit is the event that wakes the subagent back up to write the result to disk and hand you the path. It never rewrites your prompt and never summarizes Codex's output. Claude Code reads agent definitions when a session starts, so a project that just had CC-Workflow switched on needs one restart before `codex-run` can be called at all.
 
 1. **Write the prompt to a file** — `<task-dir>/codex-<unit>-prompt.md`. It **must carry the relevant `.trellis/spec/**` context inline** (plus any project conventions and the exact files in scope): an executor cannot inherit this session's task context, so unfed context is simply lost.
 2. **Spawn `codex-run`** with a task text of plain `field: value` lines — `prompt-file:` and `result-dir:` are absolute paths and required; `write:` defaults to `no`; `model:` and `effort:` are omitted unless this run genuinely needs to pin them.
