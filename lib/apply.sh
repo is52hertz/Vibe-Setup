@@ -127,12 +127,9 @@ rel_is_legacy() {
 #   - exists + template                   -> copy to <destination>.template
 #   - exists + skip                       -> leave the existing file untouched
 #
-# <destination>.template is this tool's own scratch copy — nothing else ever
-# writes it, and the end-of-run prompt asks the agent to delete it once the
-# merge is done. So a leftover one means the previous merge never happened: it
-# is refreshed to the current template rather than treated as precious. It used
-# to be skipped instead, which silently dropped the pair from APPLIED_TEMPLATES
-# and left the user staring at "needs review" with no prompt to act on.
+# A hand-out is a scratch copy of an immutable pending proposal. Repeated syncs
+# restore it from that proposal, never silently replace it with a newer release.
+# Explicit acknowledgement is handled by lib/upgrade.sh.
 copy_template_file() {
   local relative_path="$1"
   local destination="$2"
@@ -141,12 +138,15 @@ copy_template_file() {
   local target="${destination}"
   local is_template=0
 
+  if [[ "${disposition}" == template && -f "$(state_pending_path "${destination%/"${relative_path}"}" "${relative_path}")" ]]; then
+    source="$(state_pending_path "${destination%/"${relative_path}"}" "${relative_path}")"
+  fi
   if [[ ! -f "${source}" ]]; then
     info "skip ${relative_path}: not present in template dir"
     return
   fi
 
-  if [[ -e "${destination}" ]]; then
+  if [[ -e "${destination}" || -f "$(state_pending_path "${destination%/"${relative_path}"}" "${relative_path}")" || ( "${disposition}" == template && -n "$(state_file_hash "${destination%/"${relative_path}"}" "${relative_path}")" ) ]]; then
     case "${disposition}" in
       overwrite)
         target="${destination}"
@@ -165,11 +165,16 @@ copy_template_file() {
     esac
   fi
 
+  if [[ "${is_template}" -eq 1 ]]; then
+    state_save_pending "${destination%/"${relative_path}"}" "${relative_path}" "${source}" || return 1
+    if [[ "${DRY_RUN}" -eq 0 ]]; then source="$(state_pending_path "${destination%/"${relative_path}"}" "${relative_path}")"; fi
+  fi
   ensure_dir "$(dirname -- "${target}")"
   if [[ "${DRY_RUN}" -eq 1 ]]; then
     info "dry-run: copy ${relative_path} -> ${target}"
   else
-    cp "${source}" "${target}"
+    cp "${source}" "${target}.copy.$$"
+    mv "${target}.copy.$$" "${target}"
     info "copied ${target}"
   fi
 
@@ -179,14 +184,8 @@ copy_template_file() {
     # format conversion, not just a content merge, and gets its own prompt.
     local marker=""
     marker="$(modern_marker_tag "${relative_path}")"
-    if [[ -n "${marker}" ]] \
-        && [[ "$(file_format "${destination}" "${marker}")" == "legacy" ]]; then
+    if [[ "$(upgrade_meta "${source}" kind)" == convert ]] || { [[ -n "${marker}" ]] && [[ "$(file_format "${destination}" "${marker}")" == legacy ]]; }; then
       APPLIED_LEGACY+=("${relative_path}")
-    else
-      # Keep what was handed out: once the agent deletes the .template, this is
-      # the version the file was merged against (see lib/sync.sh). A conversion
-      # keeps nothing, because it only restructures the file.
-      state_save_pending "${destination%/"${relative_path}"}" "${relative_path}" "${source}"
     fi
   fi
 }
@@ -451,7 +450,9 @@ copy_all_templates_anyway() {
   local project_dir="$1"
   local rel=""
 
+  if upgrade_paused "${project_dir}"; then info "Project upgrades are paused"; return 0; fi
   for rel in "${TEMPLATE_FILES[@]}"; do
+    upgrade_local "${project_dir}" "${rel}" && continue
     [[ -f "${TEMPLATE_DIR}/${rel}" ]] || continue
     copy_template_file "${rel}" "${project_dir}/${rel}" "template"
   done
@@ -465,6 +466,13 @@ copy_all_templates_anyway() {
 # --on-exists asks for the older file-level disposition by name, so that flag
 # keeps its blunt overwrite / .template / skip behavior.
 apply_templates() {
+  if upgrade_paused "$1"; then info "Project upgrades are paused; use --apply --resume-updates"; return 0; fi
+  upgrade_begin "$1" || return 1
+  _apply_templates "$1"
+  upgrade_finish "$1"
+}
+
+_apply_templates() {
   local project_dir="$1"
   local rel="" destination="" disposition=""
 
@@ -524,7 +532,7 @@ suggest_template_merges() {
     info "copy the prompt between the lines below and give it to your AI agent:"
     {
       ui_copy_open "suggested prompt for your AI agent"
-      printf '%s\n' "Bring my files up to date with vibe-init's latest templates. For each pair,"
+      printf '%s\n' "Bring my files up to date with vibe-init's frozen proposals. For each pair,"
       printf '%s\n' "the .template is the NEW template version and the plain file is MY current"
       printf '%s\n' "one (which may hold my customizations):"
       for rel in "${APPLIED_TEMPLATES[@]}"; do
@@ -544,8 +552,10 @@ suggest_template_merges() {
       printf '%s\n' "whether it belongs and where. Where the two genuinely conflict, do not choose"
       printf '%s\n' "silently — list each conflict and ask me to decide. When you ask me anything,"
       printf '%s\n' "write it in Simplified Chinese (中文); keep code, identifiers, and your own"
-      printf '%s\n' "reasoning in English. After I confirm, delete the .template files — that is"
-      printf '%s\n' "how vibe-init knows the merge is done, so do not delete them before."
+      printf '%s\n' "reasoning in English. After approval, use --apply --pending to obtain the"
+      printf '%s\n' "review ID and current fingerprint, then --resolve ID --expect HASH --resolution merged|keep."
+      printf '%s\n' "Use .vibe-init/base/ objects for old upstream content; hashes are in the manifest."
+      printf '%s\n' "Do not delete hand-outs to acknowledge a review. Do not resolve without authorization."
       ui_copy_close
     } >&2
   fi
@@ -576,13 +586,13 @@ suggest_template_merges() {
       printf '%s\n' "and sections with no matching tag stay outside the blocks. Where you cannot"
       printf '%s\n' "tell where a section belongs, do not guess — list it and ask me to decide."
       printf '%s\n' "When you ask me anything, write it in Simplified Chinese (中文); keep code,"
-      printf '%s\n' "identifiers, and your own reasoning in English. After I confirm, delete the"
-      printf '%s\n' ".template files."
+      printf '%s\n' "identifiers, and your own reasoning in English. After approval, acknowledge"
+      printf '%s\n' "with --resolve ID --expect HASH --resolution converted (see --apply --pending)."
       ui_copy_close
     } >&2
     # The conversion only restructures; the content merge is a second round, and
     # nothing else on screen says it exists.
-    info "once the conversion is done and the .template files are deleted, run"
+    info "once the conversion is explicitly acknowledged, run"
     info "vibe-init --apply again: that sync compares the new blocks with the"
     info "templates and prints the prompt for merging their content."
   fi
@@ -690,13 +700,14 @@ show_project_diagnostics() {
   if state_is_tracked "${project_dir}"; then
     tracked_version="$(state_get "${project_dir}" version)"
     [[ -n "${tracked_version}" ]] || tracked_version="unknown"
-    tracked_detail="project tracked at v${tracked_version}"
+    tracked_detail="last tool v${tracked_version}; $(upgrade_pending_count "${project_dir}") pending review(s)"
   else
     tracked_level="todo"
     tracked_detail="project not tracked yet"
   fi
 
   ui_section "Project environment"
+  if upgrade_paused "${project_dir}"; then ui_kv_state "Upgrades" off "paused"; fi
   ui_kv_state "vibe-init"   "${tracked_level}" "${tracked_state}" "${tracked_detail}"
   ui_kv_state "Git repo"    "${git_level}"     "${git_state}"     "${git_detail}"
   ui_kv_state "Trellis"     "${trellis_level}" "${trellis_state}" "${trellis_detail}"
@@ -1081,6 +1092,7 @@ sync_menu_note() {
   local project_dir="$1"
   local tracked="" version="v${VIBE_INIT_VERSION}"
 
+  if upgrade_paused "${project_dir}"; then printf 'paused\tneutral\n'; return 0; fi
   tracked="$(state_get "${project_dir}" version)"
   if [[ -n "${tracked}" && "${tracked}" != "${VIBE_INIT_VERSION}" ]]; then
     version="v${tracked} -> v${VIBE_INIT_VERSION}"
@@ -1194,6 +1206,7 @@ dashboard_actions() {
   fi
   prompt_opt syncall "Sync everything and exit" "templates + Trellis, then exits" \
     "${all_level}" "${all_note}"; printf '\n'
+  prompt_opt upgrades "Upgrade controls" "reviews, pause, ownership"; printf '\n'
   prompt_opt quit "Exit"; printf '\n'
 }
 
@@ -1241,6 +1254,9 @@ orchestrator_dashboard() {
         apply_templates "${project_dir}"
         suggest_template_merges
         ;;
+      upgrades)
+        upgrade_controls "${project_dir}"
+        ;;
       trellis)
         manage_trellis "${project_dir}"
         ;;
@@ -1257,7 +1273,13 @@ orchestrator_dashboard() {
         if trellis_has_project "${project_dir}"; then
           trellis_update_project "${project_dir}"
         fi
-        ui_ok "All sync tasks finished."
+        if [[ "$(upgrade_pending_count "${project_dir}")" -gt 0 ]]; then
+          ui_warn "Sync partially complete: reviews still pending."
+        elif upgrade_paused "${project_dir}"; then
+          ui_info "Project upgrades remain paused."
+        else
+          ui_ok "All sync tasks finished."
+        fi
         break
         ;;
       *)

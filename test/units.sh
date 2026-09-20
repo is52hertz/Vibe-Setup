@@ -49,6 +49,7 @@ VIBE_INIT_VERSION="test"
 . "${REPO_ROOT}/lib/state.sh"
 # shellcheck source=../lib/sync.sh
 . "${REPO_ROOT}/lib/sync.sh"
+. "${REPO_ROOT}/lib/upgrade.sh"
 APPLY_FILES=""
 ON_EXISTS=""
 TEMPLATE_DIR="${WORK}/tset"
@@ -675,11 +676,11 @@ mkdir -p "${MENUPROJ}"
 
 SYNC_N_NEW=0 SYNC_N_UPDATE=0 SYNC_N_REVIEW=0 SYNC_N_LEGACY=0
 is "with nothing to sync, sync drops below the toggles" \
-  "$(menu_order "${MENUPROJ}")" "trellis ccflow integ sync syncall quit "
+  "$(menu_order "${MENUPROJ}")" "trellis ccflow integ sync syncall upgrades quit "
 
 SYNC_N_REVIEW=2
 is "with work to do, sync leads the menu" \
-  "$(menu_order "${MENUPROJ}")" "sync trellis ccflow integ syncall quit "
+  "$(menu_order "${MENUPROJ}")" "sync trellis ccflow integ syncall upgrades quit "
 SYNC_N_REVIEW=0
 
 # Each toggle reports the state the project is actually in.
@@ -814,8 +815,8 @@ is "an untracked project reports no version" "$(state_get "${WORK}" version)" ""
 if state_is_tracked "${WORK}"; then ko "a project with no manifest is untracked" "reported tracked"; else ok "a project with no manifest is untracked"; fi
 
 # --- .gitignore -------------------------------------------------------------
-# The manifest is local bookkeeping, so a git-tracked project must ignore it —
-# and asking twice must not append the entry twice.
+# Ignore private upgrade artifacts while retaining portable state. Repeated
+# calls must not append duplicate ignore entries.
 GITPROJ="${WORK}/gitproj"
 mkdir -p "${GITPROJ}"
 git -C "${GITPROJ}" init -q 2>/dev/null
@@ -823,7 +824,7 @@ printf 'node_modules/\n' > "${GITPROJ}/.gitignore"
 ensure_state_gitignored "${GITPROJ}"
 ensure_state_gitignored "${GITPROJ}"
 is    "the state dir is ignored exactly once" \
-  "$(grep -cxF '.vibe-init/' "${GITPROJ}/.gitignore")" "1"
+  "$(grep -cxF '/.vibe-init/pending/' "${GITPROJ}/.gitignore")" "1"
 has   "the user's own .gitignore lines survive" "$(cat "${GITPROJ}/.gitignore")" "node_modules/"
 
 NOGIT="${WORK}/nogit"
@@ -864,9 +865,8 @@ is "the Trellis state survives a flush that does not set it" \
   "$(state_get "${EMPTYPROJ}" trellis)" "paused"
 
 # --- a merge finished outside the tool becomes the merge base ---------------
-# The agent merges; the only signal that comes back is it deleting the
-# .template. Without acting on that, a block the user kept their own way had no
-# base and read "review" on every run, forever.
+# Explicit acknowledgement advances the upstream base even when the user keeps
+# local edits. Deleting a hand-out must never be mistaken for acknowledgement.
 MB_SET="${WORK}/mb-set"
 materialize_template_set "${MB_SET}" "ask" "" 0
 TEMPLATE_DIR="${MB_SET}"
@@ -893,7 +893,8 @@ is "while the .template is there the merge is still open" "${SYNC_N_REVIEW}" "1"
 
 rm -f "${MBPROJ}/AGENTS.md.template"
 sync_run "${MBPROJ}" plan "${TEMPLATE_FILES[@]}"
-is "once the agent deletes it, the plan reads the merge as done" "${SYNC_N_REVIEW}" "0"
+is "deleting a hand-out leaves the review pending" "${SYNC_N_REVIEW}" "1"
+upgrade_resolve "${MBPROJ}" "$(upgrade_ticket "${MBPROJ}" AGENTS.md)" "$(hash_file "${MBPROJ}/AGENTS.md")" keep 2>/dev/null
 
 # Nothing is selectable now, so this is the path that used to record nothing.
 ASSUME_DEFAULTS=1
@@ -937,10 +938,10 @@ fi
 is "the matching file beside a selected one is adopted" \
   "$(state_file_hash "${OLDPROJ}" ".claude/settings.json")" \
   "$(hash_file "${MB_SET}/.claude/settings.json")"
-if [[ -f "${OLDPROJ}/AGENTS.md.template" && ! -e "$(state_pending_path "${OLDPROJ}" "AGENTS.md")" ]]; then
-  ok "a format conversion keeps no template: its merge is the next round"
+if [[ -f "${OLDPROJ}/AGENTS.md.template" && "$(upgrade_meta "$(state_pending_path "${OLDPROJ}" "AGENTS.md")" kind)" == convert ]]; then
+  ok "a format conversion has an explicit pending review"
 else
-  ko "a format conversion keeps no template: its merge is the next round" "pending copy written"
+  ko "a format conversion has an explicit pending review" "missing conversion review"
 fi
 
 # --- pausing, restoring and uninstalling Trellis ----------------------------

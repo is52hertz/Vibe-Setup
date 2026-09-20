@@ -27,13 +27,9 @@
 # Only that last case produces a .template pair and a prompt, which is what
 # makes those mean something again.
 #
-# The merge itself happens outside this tool, in the user's AI agent, and the
-# one signal that comes back is the agent deleting the .template once the user
-# confirms. So the template handed out is kept (lib/state.sh, pending/), and
-# when its .template is gone that version becomes the base: the blocks the user
-# kept their own way read "local" from then on instead of "review" forever. A
-# format conversion keeps nothing — it only restructures, and the content merge
-# is the next sync's job.
+# Reviews freeze the new template under pending/. Explicit acknowledgement in
+# lib/upgrade.sh advances the baseline; deleting a hand-out does not. A format
+# conversion is acknowledged separately and leaves content for the next sync.
 #
 # Compatible with macOS Bash 3.2 (no associative arrays, no mapfile).
 
@@ -125,49 +121,19 @@ merge_verdict() {
   printf 'review\n'
 }
 
-# The merge base for a whole file. A handed-out template the agent is done with
-# is the version the user merged against, so it wins over the older record in
-# the manifest. Plan and apply both read the base here, which is what keeps the
-# menu in agreement with a sync that has not recorded the promotion yet.
-# Usage: _sync_base_file_hash <project_dir> <relative_path>
-_sync_base_file_hash() {
-  if state_pending_resolved "$1" "$2"; then
-    hash_file "$(state_pending_path "$1" "$2")" && return 0
-  fi
-  state_file_hash "$1" "$2"
-}
+# Baselines advance only through safe writes or explicit acknowledgement.
+_sync_base_file_hash() { state_file_hash "$1" "$2"; }
 
-# The merge base for one block, by the same rule.
-# Usage: _sync_base_block_hash <project_dir> <relative_path> <tag> <id>
-_sync_base_block_hash() {
-  if state_pending_resolved "$1" "$2"; then
-    hash_block "$(state_pending_path "$1" "$2")" "$3" "${4:-}" && return 0
-  fi
-  state_block_hash "$1" "$2" "$3" "${4:-}"
-}
-
-# Stage a resolved hand-out as the recorded base: the whole file for a copied
-# file; for AGENTS.md / CLAUDE.md each block the project still carries — a
-# pruned profile stays unrecorded, as it would after a scaffold.
-# Usage: _sync_promote_pending <project_dir> <relative_path>
-_sync_promote_pending() {
-  local project_dir="$1" rel="$2"
-  local pending="" tag="" id="" h=""
-
-  pending="$(state_pending_path "${project_dir}" "${rel}")"
-  if [[ -z "$(modern_marker_tag "${rel}")" ]]; then
-    if h="$(hash_file "${pending}")"; then
-      state_record_file "${rel}" "${h}"
+# Iterate current template blocks plus previously managed blocks. This is what
+# makes upstream removals visible without claiming user-created blocks.
+_sync_block_keys() {
+  local manifest="$(state_path "$1")"
+  {
+    list_blocks "$3"
+    if [[ -f "${manifest}" ]]; then
+      awk -F'\t' -v rel="$2" '$1 == "block" && $2 == rel { print $3 "\t" $4 }' "${manifest}"
     fi
-    return 0
-  fi
-  while IFS=$'\t' read -r tag id; do
-    [[ -n "${tag}" ]] || continue
-    has_block "${project_dir}/${rel}" "${tag}" "${id}" || continue
-    h="$(hash_block "${pending}" "${tag}" "${id}")" || continue
-    state_record_block "${rel}" "${tag}" "${id}" "${h}"
-  done < <(list_blocks "${pending}")
-  return 0
+  } | awk '!seen[$0]++'
 }
 
 # Replace one block of <dst> with the same block from <src>. Honors --dry-run.
@@ -204,7 +170,8 @@ _sync_copy() {
     info "dry-run: copy ${rel} -> ${dst}"
     return 0
   fi
-  cp "${src}" "${dst}" || return 1
+  cp "${src}" "${dst}.sync.$$" || return 1
+  mv "${dst}.sync.$$" "${dst}" || return 1
   info "copied ${dst}"
 }
 
@@ -224,17 +191,43 @@ _sync_blocks() {
   while IFS=$'\t' read -r tag id; do
     [[ -n "${tag}" ]] || continue
 
+    upgrade_local "${project_dir}" "${rel}" "${tag}" "${id}" && continue
+    bh="$(state_block_hash "${project_dir}" "${rel}" "${tag}" "${id}")"
+    th="$(hash_block "${src}" "${tag}" "${id}" || true)"
+    if [[ -z "${th}" ]]; then
+      # Optional blocks can disappear because a different variant was assembled.
+      # Their removal belongs to explicit feature toggles, not template sync.
+      block_is_optional "${tag}" && continue
+      # A removed upstream block is a tombstone. User edits require review.
+      if ! has_block "${dst}" "${tag}" "${id}"; then
+        [[ "${mode}" != apply ]] || state_record_block "${rel}" "${tag}" "${id}" absent
+      elif [[ "${bh}" == absent ]]; then
+        kept=$((kept + 1))
+      elif [[ "$(hash_block "${dst}" "${tag}" "${id}")" == "${bh}" ]]; then
+        forwarded=$((forwarded + 1))
+        if [[ "${mode}" == apply ]]; then
+          if [[ "${DRY_RUN}" -eq 1 ]]; then
+            info "dry-run: remove retired $(block_label "${tag}" "${id}") from ${rel}"
+          else
+            remove_block "${dst}" "${tag}" "${id}" || return 1
+          fi
+          state_record_block "${rel}" "${tag}" "${id}" absent
+        fi
+      else
+        reviewed=$((reviewed + 1)); names="${names}$(block_label "${tag}" "${id}") (retired) "
+      fi
+      continue
+    fi
     if ! has_block "${dst}" "${tag}" "${id}"; then
+      # An acknowledged local deletion remains local while upstream is unchanged.
+      [[ "${bh}" == "${th}" ]] && continue
       block_is_optional "${tag}" && continue
       reviewed=$(( reviewed + 1 ))
       names="${names}$(block_label "${tag}" "${id}") (missing) "
       continue
     fi
 
-    th=""; ph=""; bh=""
-    th="$(hash_block "${src}" "${tag}" "${id}")" || true
     ph="$(hash_block "${dst}" "${tag}" "${id}")" || true
-    bh="$(_sync_base_block_hash "${project_dir}" "${rel}" "${tag}" "${id}")" || true
     verdict="$(merge_verdict "${th}" "${ph}" "${bh}")"
 
     case "${verdict}" in
@@ -256,6 +249,7 @@ _sync_blocks() {
             state_record_block "${rel}" "${tag}" "${id}" "${th}"
           else
             warn "could not refresh $(block_label "${tag}" "${id}") in ${rel}"
+            return 1
           fi
         fi
         ;;
@@ -264,7 +258,7 @@ _sync_blocks() {
         names="${names}$(block_label "${tag}" "${id}") "
         ;;
     esac
-  done < <(list_blocks "${src}")
+  done < <(_sync_block_keys "${project_dir}" "${rel}" "${src}")
 
   if [[ "${reviewed}" -gt 0 ]]; then
     SYNC_LAST_STATE="review"
@@ -289,24 +283,10 @@ _sync_blocks() {
 # mode=apply does the same walk and acts on it. One code path for both, so the
 # menu's summary can never disagree with what the sync then does.
 #
-# A resolved hand-out is promoted to the recorded base before the walk, so the
-# records the walk stages for this run land after it and win. The kept copy is
-# then forgotten — unless the walk just handed out a newer one, which shows up
-# as a fresh .template.
 # Usage: sync_one <project_dir> <relative_path> plan|apply
 sync_one() {
   local project_dir="$1" rel="$2" mode="$3"
-  local resolved=0
-
-  if [[ "${mode}" == "apply" ]] && state_pending_resolved "${project_dir}" "${rel}"; then
-    resolved=1
-    _sync_promote_pending "${project_dir}" "${rel}"
-  fi
   _sync_one_walk "${project_dir}" "${rel}" "${mode}"
-  if [[ "${resolved}" -eq 1 ]] && state_pending_resolved "${project_dir}" "${rel}"; then
-    state_drop_pending "${project_dir}" "${rel}"
-  fi
-  return 0
 }
 
 _sync_one_walk() {
@@ -317,6 +297,16 @@ _sync_one_walk() {
   SYNC_LAST_STATE=""
   SYNC_LAST_NOTE=""
 
+  if upgrade_paused "${project_dir}" || upgrade_local "${project_dir}" "${rel}"; then
+    SYNC_LAST_STATE="same"; SYNC_LAST_NOTE="project-managed or paused"; return 0
+  fi
+  if [[ -f "$(state_pending_path "${project_dir}" "${rel}")" ]]; then
+    SYNC_LAST_STATE="review"; SYNC_LAST_NOTE="awaiting explicit acknowledgement"
+    if [[ "$(upgrade_meta "$(state_pending_path "${project_dir}" "${rel}")" kind)" == convert ]]; then SYNC_LAST_STATE="legacy"; fi
+    if [[ "${mode}" == apply ]]; then copy_template_file "${rel}" "${dst}" template; fi
+    return 0
+  fi
+
   if [[ ! -f "${src}" ]]; then
     SYNC_LAST_STATE="missing-source"
     if [[ "${mode}" == "apply" ]]; then
@@ -325,7 +315,26 @@ _sync_one_walk() {
     return 0
   fi
 
+  marker="$(modern_marker_tag "${rel}")"
+  if [[ -n "${marker}" ]] && ! upgrade_valid_blocks "${src}"; then
+    warn "invalid upstream block structure: ${rel}"; return 1
+  fi
+  if [[ -n "${marker}" && -f "${dst}" ]] && ! upgrade_valid_blocks "${dst}"; then
+    SYNC_LAST_STATE="review"; SYNC_LAST_NOTE="invalid block structure; repair before merge"
+    if [[ "${mode}" == apply ]]; then copy_template_file "${rel}" "${dst}" template; fi
+    return 0
+  fi
   if [[ ! -e "${dst}" ]]; then
+    bh="$(state_file_hash "${project_dir}" "${rel}")"
+    if [[ -n "${bh}" ]]; then
+      if [[ "$(hash_file "${src}")" == "${bh}" ]]; then
+        SYNC_LAST_STATE="same"; SYNC_LAST_NOTE="local deletion"
+      else
+        SYNC_LAST_STATE="review"; SYNC_LAST_NOTE="locally deleted file, upstream changed"
+        if [[ "${mode}" == apply ]]; then copy_template_file "${rel}" "${dst}" template; fi
+      fi
+      return 0
+    fi
     SYNC_LAST_STATE="new"
     SYNC_LAST_NOTE="creates ${rel}"
     if [[ "${mode}" == "apply" ]] && _sync_copy "${rel}" "${src}" "${dst}"; then
@@ -353,6 +362,12 @@ _sync_one_walk() {
       return 0
       ;;
     forward)
+      # Block ownership always wins over a whole-file fast-forward.
+      if [[ -n "$(modern_marker_tag "${rel}")" ]]; then
+        _sync_blocks "${project_dir}" "${rel}" "${mode}"
+        if [[ "${SYNC_LAST_STATE}" == review && "${mode}" == apply ]]; then copy_template_file "${rel}" "${dst}" template; fi
+        return 0
+      fi
       SYNC_LAST_STATE="update"
       SYNC_LAST_NOTE="whole file"
       if [[ "${mode}" == "apply" ]] && _sync_copy "${rel}" "${src}" "${dst}"; then
@@ -369,6 +384,7 @@ _sync_one_walk() {
   marker="$(modern_marker_tag "${rel}")"
   if [[ -n "${marker}" ]]; then
     if [[ "$(file_format "${dst}" "${marker}")" == "legacy" ]]; then
+      if [[ "${verdict}" == local ]]; then SYNC_LAST_STATE="same"; SYNC_LAST_NOTE="kept project version"; return 0; fi
       SYNC_LAST_STATE="legacy"
       SYNC_LAST_NOTE="pre-<TAG> format"
       if [[ "${mode}" == "apply" ]]; then

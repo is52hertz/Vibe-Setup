@@ -109,32 +109,136 @@ tell a template change from your own edits:
 | Both moved | Left alone; the new template lands beside it as `<name>.template` with a prompt for your AI agent naming the blocks still open. |
 
 Nothing you wrote is ever overwritten. A project with no manifest yet (an older
-one, or a fresh clone) has no merge base, so its first sync treats every
+one, or a clone whose state was not committed) has no merge base, so its first sync treats every
 existing file that differs as needing review, and records what already matches.
 `--on-exists overwrite|template|skip` bypasses the merge and applies the older
 blunt file-level policy instead.
 
-**How vibe-init learns a merge is done.** The merge happens in your AI agent, not
-in vibe-init, so the prompt tells the agent to delete the `.template` files once
-you confirm — that deletion is the signal. vibe-init keeps a copy of each
-template it handed out; on the next run, a `.template` that is gone means that
-version was merged, and it becomes the merge base. From then on, blocks you kept
-your own way stay quiet, and a later template change is compared against what
-you actually merged. Leave the `.template` in place until the merge is really
-done: deleting it early reads as "keep my version".
+**Explicit review completion.** Each review freezes its upstream template under
+`.vibe-init/pending/`. Later releases cannot replace an open proposal. Deleting
+`<name>.template` does **not** acknowledge it; the next sync restores the hand-out.
+Your AI edits the project file, using the old upstream objects in `.vibe-init/base/`
+and the frozen new proposal to distinguish upstream edits from project edits.
+Block hashes in the manifest are authoritative; a whole-file base can be older
+than individually updated blocks. A missing base object means the old content is
+unknown, not that the current file should be treated as the old template.
 
-`.vibe-init/` is local bookkeeping and is added to the project's `.gitignore`.
+After reviewing the result, obtain the review ID and **current** file fingerprint:
 
-An `AGENTS.md` or `CLAUDE.md` written before the `<TAG>` format has no blocks to
-merge, so upgrading it takes two rounds — the script never rewrites the file
-itself:
+```sh
+vibe-init --apply --pending
+vibe-init --apply --resolve REVIEW_ID --expect FILE_HASH --resolution merged
+```
 
-1. **Convert.** The sync writes `<name>.template` and a prompt asking your AI
-   agent to wrap your existing sections in the new `<TAG>` blocks without
-   changing a word. Check the diff, then let the agent delete the `.template`.
-2. **Merge.** Run `vibe-init --apply` again. Now that the file has blocks, the
-   sync compares them one by one and prints the ordinary merge prompt, naming
-   only the blocks that still differ from the template.
+Replace `REVIEW_ID` and `FILE_HASH` with the values shown by `--pending`. This
+acknowledges that exact file content against that frozen upstream version. A
+stale fingerprint, changed proposal, duplicate/unclosed managed tags, or merge
+conflict markers rejects the acknowledgement. The tool does not prove semantic
+correctness or validate arbitrary configuration formats (including JSON); review
+those before acknowledging. An AI should resolve only after the user's approval
+or under an existing authorization to make that decision.
+
+There are three resolution choices:
+
+- `merged`: the content merge has been reviewed and completed.
+- `keep`: keep the project version **this time**, including intentional deletion.
+  The same upstream proposal stops recurring; future upstream changes are still
+  compared with the accepted upstream base. This never copies template text over
+  the project's file.
+- `converted`: acknowledge only a legacy format conversion. It does not accept
+  the upstream content; run `--apply` again for the content review.
+
+The acknowledged **upstream template**, never the customized result, becomes the
+next baseline. A newly released template can therefore produce another review
+immediately after acknowledging an older frozen proposal. To defer an update,
+leave its review unresolved or exit the menu; no baseline is advanced.
+
+### Pause updates or own your rules
+
+The dashboard's **Upgrade controls** offers pending reviews, project pause/resume,
+and file/block ownership. The same operations are available to scripts and agents:
+
+```sh
+vibe-init --apply --pause-updates
+vibe-init --apply --resume-updates
+vibe-init --apply --self-manage AGENTS.md:CORE_RULES
+vibe-init --apply --follow AGENTS.md:CORE_RULES
+```
+
+Pause persists until resumed, including noninteractive `--apply -y` runs. Resume
+only changes the policy; the next ordinary `--apply` checks the latest templates.
+This pauses **template sync**, not explicitly requested Trellis lifecycle commands.
+
+A scope is `FILE` or `FILE:TAG[:ID]`, for example `AGENTS.md:PROFILE:tool`.
+Project ownership leaves the scope untouched during normal sync. A whole-file
+ownership rule takes precedence over its block rules; restore file following
+first if you want to follow individual blocks. Changing ownership does not
+silently resolve an existing review; acknowledge it separately with `keep`.
+`PRODUCT` and `PROJECT_PHASE` in AGENTS.md are project-owned by default. Use
+`--follow` if a project deliberately wants to follow either template block.
+Ordinary edits to other rules need no policy: if upstream has not changed, sync
+already preserves them. Explicit `--on-exists` remains a legacy copy override,
+so do not use `overwrite` as your normal upgrade command.
+
+### Portable state and older projects
+
+Commit `.vibe-init/manifest`, `.vibe-init/policy` (when present), and
+`.vibe-init/base/` with your project. They store hashes, decisions, and **upstream**
+text, not copies of your customized project files. The tool does not commit for
+you. Only `pending/`, `backups/`, and `lock/` are ignored. Existing exact
+`.vibe-init/` ignore rules emitted by older versions are migrated; broader custom
+or global ignore rules remain yours to adjust. For non-Git directories, include
+the durable state in your normal backups.
+
+Schema-1 manifests migrate without losing their hashes. Matching templates fill
+in recoverable base objects; unknown historical content is not invented. Legacy
+pending copies require explicit acknowledgement even if their `.template` is
+already gone. Future, unsupported schemas are rejected before project writes.
+Projects without state are conservatively adopted: matching content is recorded,
+and divergent content needs review. Skipped releases require no intermediate CLI
+installation for ordinary template changes.
+
+An `AGENTS.md` or `CLAUDE.md` written before the `<TAG>` format takes two rounds:
+
+1. **Convert.** The sync writes `<name>.template` and instructions for wrapping
+   existing sections in blocks without changing their content. Review the diff,
+   then resolve with `--resolution converted`.
+2. **Merge.** Run `--apply` again, review the content changes, then resolve with
+   `merged` or `keep`.
+
+Previously managed, nonoptional blocks retired upstream are removed only if
+unchanged locally; edited ones require review. Local file deletion is preserved,
+with a review if upstream subsequently changes. Optional block absence remains a
+conservative opt-out: a missing profile/feature/integration is never re-enabled
+implicitly. An optional block absent from the assembled template may reflect a
+variant change, so it is not automatically removed. File renames, retired files,
+and ambiguous block renames require an explicit migration in the release that
+introduces them; this version does not guess rename intent from similar text.
+
+The displayed project version is the **last tool used**, not a claim that all
+updates were accepted. Pending review counts remain visible independently.
+
+### Recovery
+
+Template sync, resolution and policy changes save a local recovery snapshot and
+print its directory. Restore a completed snapshot by its directory name:
+
+```sh
+vibe-init --apply --rollback 20260920T120000Z.12345
+```
+
+Rollback restores managed files and mutable bookkeeping only if they still match
+the snapshot's post-operation fingerprints. It refuses to overwrite later edits.
+An incomplete snapshot or a project changed after the operation requires manual
+inspection of its `before/` directory; it is not safe to force automatic rollback.
+Immutable, unreferenced base objects may remain after restoration. Snapshots can
+contain project-specific content and remain ignored; retain or remove them locally
+as needed. Recovery covers template upgrade operations, not Trellis's own lifecycle
+or feature-toggle archives.
+
+A per-project lock prevents concurrent upgrade processes. After a hard kill, check
+that no upgrade is running before removing `.vibe-init/lock/`. Managed paths and
+upgrade state containing symlinks are rejected to prevent redirected writes.
 
 ### Options
 
@@ -151,6 +255,11 @@ itself:
 | `--template-dir DIR` | Override the template root — the directory holding `blocks/` and `common/` (default: `templates/` next to the script). |
 | `--apply` | Work on the project in the current directory instead of scaffolding a new one: open the dashboard, or sync without it (see above). |
 | `--files "A,B"` | With `--apply`, sync only this subset of the managed files instead of prompting. |
+| `--pending` | With `--apply`, list frozen reviews and current fingerprints without writing project files. |
+| `--resolve ID --expect HASH --resolution MODE` | Acknowledge a reviewed file as `merged`, `keep`, or `converted`. |
+| `--pause-updates` / `--resume-updates` | Persistently pause or resume project template upgrades. |
+| `--self-manage SCOPE` / `--follow SCOPE` | Set ownership for a file or `FILE:TAG[:ID]` scope. |
+| `--rollback ID` | Restore a completed recovery snapshot when no later edits would be lost. |
 | `--on-exists MODE` | With `--apply`, skip the merge and resolve every existing file with one policy: `overwrite`, `template` (write `<name>.template`), or `skip`. |
 | `-y`, `--yes` | Accept safe defaults for all prompts. |
 | `--dry-run` | Print actions without writing files or running installers. |
@@ -165,7 +274,7 @@ itself:
 | `CC-Cowork-Workflow.md` | Optional (`--cc-workflow yes`): how Claude Code delegates execution and review to an external executor. |
 | `.claude/settings.json` | Denies agents from reading secrets (`.env*`, `secrets/**`, `*.pem`/`*.key`/`*.p12`/`*.pfx`). |
 | `Test/templates-test-checklist.html` | A manual test checklist. |
-| `.vibe-init/` | `manifest`: what vibe-init last wrote, as content hashes — the merge base for `--apply`. `pending/`: the templates handed out as `.template`, until their merge is done. Added to `.gitignore` in a git project. |
+| `.vibe-init/` | Portable `manifest`, `policy`, and upstream `base/` objects. Local `pending/`, `backups/`, and `lock/` are ignored. |
 
 ## Templates
 
@@ -205,13 +314,14 @@ rather than overwriting it.
 ./test/run.sh
 ```
 
-Runs both suites. `test/dry-run.sh` drives the CLI and asserts on what it prints
+Runs all three suites. `test/dry-run.sh` drives the CLI and asserts on what it prints
 — scaffold, `--apply` file selection and `--on-exists`, the sync verdicts, flag
 guards, and Trellis init. `test/units.sh` exercises the libraries directly —
 block assembly and editing, the state manifest, the merge verdicts, the
 dashboard's menu order and reveals, the Trellis update gate, and the
 non-interactive contracts of the prompts. Exit code 0 means every assertion
-passed.
+passed. `test/upgrades.sh` exercises cross-release reviews, ownership, pause,
+legacy adoption, clone portability, validation, locking, previews, and recovery.
 
 ## License
 
