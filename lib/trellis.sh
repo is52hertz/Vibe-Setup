@@ -134,6 +134,90 @@ trellis_update_project() {
   run_in_dir "${project_dir}" trellis update
 }
 
+# Taking Trellis out of a project comes in two kinds, because the work it holds
+# matters very differently. On a project just started, .trellis/ is little more
+# than scaffolding. Mid-project it holds the task PRDs, specs, journals and
+# memory, and `trellis uninstall` deletes all of it with no backup. Trellis
+# ships the reversible kind itself — `ablate` moves every Trellis surface out
+# and keeps a recovery transaction under ~/.trellis, `restore` puts the project
+# back byte for byte — so pausing is that, not a copy this tool would have to
+# keep in step with Trellis's own layout.
+#
+# None of these pass --yes: Trellis asks, and refuses a scripted uninstall while
+# .trellis/ holds uncommitted work.
+
+# True when .trellis/ holds user work that git could not give back after an
+# uninstall: the project is not a repository, or something under spec/, tasks/
+# or workspace/ — where Trellis keeps that work — is uncommitted or ignored.
+# Usage: trellis_has_unprotected_data <project_dir>
+trellis_has_unprotected_data() {
+  local project_dir="$1"
+  local dir="" found=0
+  local -a data_dirs=()
+
+  for dir in spec tasks workspace; do
+    if [[ -d "${project_dir}/.trellis/${dir}" ]]; then
+      data_dirs+=(".trellis/${dir}")
+      found=1
+    fi
+  done
+  [[ "${found}" -eq 1 ]] || return 1
+
+  if ! command -v git >/dev/null 2>&1 \
+      || ! git -C "${project_dir}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    return 0
+  fi
+  [[ -n "$(git -C "${project_dir}" status --porcelain --ignored -- "${data_dirs[@]}" 2>/dev/null)" ]]
+}
+
+# Pause Trellis: `trellis ablate`, which Trellis can undo.
+# Usage: trellis_pause_project <project_dir>
+trellis_pause_project() {
+  local project_dir="$1"
+
+  if ! trellis_is_installed; then
+    ui_error "Trellis CLI is not installed."
+    return 1
+  fi
+  ui_info "Pausing moves every Trellis file out of the project and keeps a recovery"
+  ui_info "copy in ~/.trellis on this machine; Restore brings back tasks, specs,"
+  ui_info "journals and memory exactly as they are now."
+  run_in_dir "${project_dir}" trellis ablate
+}
+
+# Undo a pause: `trellis restore`. Trellis itself reports when there is nothing
+# to restore, which also covers a pause made outside this tool.
+# Usage: trellis_restore_project <project_dir>
+trellis_restore_project() {
+  local project_dir="$1"
+
+  if ! trellis_is_installed; then
+    ui_error "Trellis CLI is not installed."
+    return 1
+  fi
+  run_in_dir "${project_dir}" trellis restore
+}
+
+# Remove Trellis for good: `trellis uninstall`. When the work under .trellis/
+# is not safe in git, say what is lost and ask first — the answer defaults to
+# no, and pausing is named as the way to keep it.
+# Usage: trellis_uninstall_project <project_dir>
+trellis_uninstall_project() {
+  local project_dir="$1"
+
+  if ! trellis_is_installed; then
+    ui_error "Trellis CLI is not installed."
+    return 1
+  fi
+  if trellis_has_unprotected_data "${project_dir}"; then
+    ui_warn "The tasks, specs, journals and memory under .trellis/ are not all committed."
+    ui_warn "Uninstalling deletes them permanently. To keep them, pause Trellis instead,"
+    ui_warn "or commit .trellis/ first."
+    ask_yes_no "Uninstall and delete them anyway?" "no" || return 1
+  fi
+  run_in_dir "${project_dir}" trellis uninstall
+}
+
 trellis_upgrade_cli() {
   if ! command -v npm >/dev/null 2>&1; then
     ui_error "npm not found. Cannot upgrade Trellis."

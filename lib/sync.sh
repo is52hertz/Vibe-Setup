@@ -27,6 +27,14 @@
 # Only that last case produces a .template pair and a prompt, which is what
 # makes those mean something again.
 #
+# The merge itself happens outside this tool, in the user's AI agent, and the
+# one signal that comes back is the agent deleting the .template once the user
+# confirms. So the template handed out is kept (lib/state.sh, pending/), and
+# when its .template is gone that version becomes the base: the blocks the user
+# kept their own way read "local" from then on instead of "review" forever. A
+# format conversion keeps nothing — it only restructures, and the content merge
+# is the next sync's job.
+#
 # Compatible with macOS Bash 3.2 (no associative arrays, no mapfile).
 
 if ! command -v hash_file >/dev/null 2>&1; then
@@ -117,6 +125,51 @@ merge_verdict() {
   printf 'review\n'
 }
 
+# The merge base for a whole file. A handed-out template the agent is done with
+# is the version the user merged against, so it wins over the older record in
+# the manifest. Plan and apply both read the base here, which is what keeps the
+# menu in agreement with a sync that has not recorded the promotion yet.
+# Usage: _sync_base_file_hash <project_dir> <relative_path>
+_sync_base_file_hash() {
+  if state_pending_resolved "$1" "$2"; then
+    hash_file "$(state_pending_path "$1" "$2")" && return 0
+  fi
+  state_file_hash "$1" "$2"
+}
+
+# The merge base for one block, by the same rule.
+# Usage: _sync_base_block_hash <project_dir> <relative_path> <tag> <id>
+_sync_base_block_hash() {
+  if state_pending_resolved "$1" "$2"; then
+    hash_block "$(state_pending_path "$1" "$2")" "$3" "${4:-}" && return 0
+  fi
+  state_block_hash "$1" "$2" "$3" "${4:-}"
+}
+
+# Stage a resolved hand-out as the recorded base: the whole file for a copied
+# file; for AGENTS.md / CLAUDE.md each block the project still carries — a
+# pruned profile stays unrecorded, as it would after a scaffold.
+# Usage: _sync_promote_pending <project_dir> <relative_path>
+_sync_promote_pending() {
+  local project_dir="$1" rel="$2"
+  local pending="" tag="" id="" h=""
+
+  pending="$(state_pending_path "${project_dir}" "${rel}")"
+  if [[ -z "$(modern_marker_tag "${rel}")" ]]; then
+    if h="$(hash_file "${pending}")"; then
+      state_record_file "${rel}" "${h}"
+    fi
+    return 0
+  fi
+  while IFS=$'\t' read -r tag id; do
+    [[ -n "${tag}" ]] || continue
+    has_block "${project_dir}/${rel}" "${tag}" "${id}" || continue
+    h="$(hash_block "${pending}" "${tag}" "${id}")" || continue
+    state_record_block "${rel}" "${tag}" "${id}" "${h}"
+  done < <(list_blocks "${pending}")
+  return 0
+}
+
 # Replace one block of <dst> with the same block from <src>. Honors --dry-run.
 _sync_replace_block() {
   local src="$1" dst="$2" rel="$3" tag="$4" id="${5:-}"
@@ -181,7 +234,7 @@ _sync_blocks() {
     th=""; ph=""; bh=""
     th="$(hash_block "${src}" "${tag}" "${id}")" || true
     ph="$(hash_block "${dst}" "${tag}" "${id}")" || true
-    bh="$(state_block_hash "${project_dir}" "${rel}" "${tag}" "${id}")" || true
+    bh="$(_sync_base_block_hash "${project_dir}" "${rel}" "${tag}" "${id}")" || true
     verdict="$(merge_verdict "${th}" "${ph}" "${bh}")"
 
     case "${verdict}" in
@@ -235,8 +288,28 @@ _sync_blocks() {
 # Sync one managed file. mode=plan classifies without writing anything;
 # mode=apply does the same walk and acts on it. One code path for both, so the
 # menu's summary can never disagree with what the sync then does.
+#
+# A resolved hand-out is promoted to the recorded base before the walk, so the
+# records the walk stages for this run land after it and win. The kept copy is
+# then forgotten — unless the walk just handed out a newer one, which shows up
+# as a fresh .template.
 # Usage: sync_one <project_dir> <relative_path> plan|apply
 sync_one() {
+  local project_dir="$1" rel="$2" mode="$3"
+  local resolved=0
+
+  if [[ "${mode}" == "apply" ]] && state_pending_resolved "${project_dir}" "${rel}"; then
+    resolved=1
+    _sync_promote_pending "${project_dir}" "${rel}"
+  fi
+  _sync_one_walk "${project_dir}" "${rel}" "${mode}"
+  if [[ "${resolved}" -eq 1 ]] && state_pending_resolved "${project_dir}" "${rel}"; then
+    state_drop_pending "${project_dir}" "${rel}"
+  fi
+  return 0
+}
+
+_sync_one_walk() {
   local project_dir="$1" rel="$2" mode="$3"
   local src="${TEMPLATE_DIR}/${rel}" dst="${project_dir}/${rel}"
   local th="" ph="" bh="" verdict="" marker=""
@@ -265,7 +338,7 @@ sync_one() {
 
   th="$(hash_file "${src}")" || true
   ph="$(hash_file "${dst}")" || true
-  bh="$(state_file_hash "${project_dir}" "${rel}")" || true
+  bh="$(_sync_base_file_hash "${project_dir}" "${rel}")" || true
   verdict="$(merge_verdict "${th}" "${ph}" "${bh}")"
 
   case "${verdict}" in
@@ -341,6 +414,29 @@ sync_reset() {
   SYNC_N_SAME=0
   APPLIED_TEMPLATES=()
   APPLIED_LEGACY=()
+}
+
+# Record the files the plan found already settled. The checklist never offers
+# them, because there is nothing to do to them, and so no apply pass used to
+# reach them either: a first sync adopted nothing, and a merge the agent had
+# finished was never recorded. For a settled file an apply pass writes nothing
+# into the project — it only stages what is known: a file identical to the
+# template, the blocks that match it, the base of a finished merge. The caller
+# flushes, and resets the plan tallies this leaves behind.
+# Usage: sync_adopt <project_dir> [relative_path_to_skip...]
+sync_adopt() {
+  local project_dir="$1" rel="" skip=""
+  shift
+
+  for rel in "${TEMPLATE_FILES[@]}"; do
+    for skip in "$@"; do
+      [[ "${skip}" == "${rel}" ]] && continue 2
+    done
+    sync_one "${project_dir}" "${rel}" plan
+    [[ "${SYNC_LAST_STATE}" == "same" ]] || continue
+    sync_one "${project_dir}" "${rel}" apply
+  done
+  return 0
 }
 
 # Run the whole set through sync_one and tally it.

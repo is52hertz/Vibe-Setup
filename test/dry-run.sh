@@ -91,12 +91,25 @@ vi "${d}" --trellis no --git no --dry-run
 has   "scaffold copies AGENTS.md"              "-> ${d}/AGENTS.md"
 hasnt "scaffold skips CC-Cowork-Workflow by default" "-> ${d}/CC-Cowork-Workflow.md"
 has   "scaffold copies settings.json"          "-> ${d}/.claude/settings.json"
+hasnt "scaffold skips the test checklist by default" "-> ${d}/Test/templates-test-checklist.html"
 has   "--git no skips git init"                "skip git init (per --git no)"
+
+# --- scaffold with --test-checklist yes ---
+d="$(sandbox)"
+vi "${d}" --trellis no --git no --test-checklist yes --dry-run
+has "--test-checklist yes copies the page"  "-> ${d}/Test/templates-test-checklist.html"
+has "and says so in the set label"          "test-checklist=on"
+
+# --- scaffold with invalid --test-checklist dies ---
+vi "$(sandbox)" --trellis no --git no --test-checklist bogus --dry-run
+rc_is "--test-checklist bogus dies" 1
+has   "--test-checklist bogus error message" "--test-checklist must be yes or no"
 
 # --- scaffold with --cc-workflow yes ---
 d="$(sandbox)"
 vi "${d}" --trellis no --git no --cc-workflow yes --dry-run
 has "scaffold with --cc-workflow yes copies file" "-> ${d}/CC-Cowork-Workflow.md"
+has "and the subagent the file delegates through" "-> ${d}/.claude/agents/codex-run.md"
 
 # --- scaffold with invalid --cc-workflow dies ---
 vi "$(sandbox)" --trellis no --git no --cc-workflow bogus --dry-run
@@ -197,6 +210,9 @@ has   "conversion prompt names the target tags" "<METADATA>"
 has   "conversion prompt covers the anchors"    "PROFILE:service START"
 has   "conversion prompt keeps my content"      "do not rewrite, shorten"
 hasnt "legacy pair absent from merge prompt"    "Bring my files up to date"
+has   "conversion names the merge round after it" "once the conversion is done and the .template files are deleted"
+has   "diagnostics name both rounds"            "then sync again to merge"
+has   "nothing to record still writes the manifest" "dry-run: write .vibe-init/manifest"
 
 # --- apply: modern target keeps the ordinary merge prompt -------------------
 d="$(sandbox)"
@@ -207,6 +223,8 @@ has   "diagnostics see the modern format"     "Modern (<TAG> format)"
 hasnt "modern target gets no upgrade hint"    "Format upgrade"
 has   "modern target gets the merge prompt"   "Bring my files up to date"
 hasnt "modern target gets no conversion prompt" "Restructure my files into the new"
+has   "merge prompt names its completion signal" "how vibe-init knows the merge is done"
+hasnt "a modern run names no second round"     "once the conversion is done"
 
 # --- apply: mixed pair splits the two prompts -------------------------------
 d="$(sandbox)"
@@ -308,6 +326,14 @@ if [[ -f "${d}/CLAUDE.md" ]] && grep -q "CC-Cowork-Workflow.md" "${d}/CLAUDE.md"
   ok "scaffold --cc-workflow yes CLAUDE.md includes reference"
 else
   ko "scaffold --cc-workflow yes CLAUDE.md includes reference" "CLAUDE.md missing CC-workflow reference"
+fi
+
+# A dry run only prints the copy; this is the one place that proves the agent
+# file reaches disk, under the name the workflow document tells Claude to call.
+if [[ -f "${d}/.claude/agents/codex-run.md" ]]; then
+  ok "scaffold --cc-workflow yes creates the delegation subagent"
+else
+  ko "scaffold --cc-workflow yes creates the delegation subagent" ".claude/agents/codex-run.md was not created"
 fi
 
 # --- real scaffold with --profile service ---
@@ -511,6 +537,46 @@ d="$(sandbox)"
 printf 'existing\n' > "${d}/AGENTS.md"
 vi "${d}" --apply -y --dry-run --on-exists template
 has "--on-exists keeps the file-level labels" "already exists -> template"
+
+# --- a project vibe-init never touched, through to a settled sync ------------
+# The whole first-contact loop, for real rather than --dry-run: the first apply
+# creates what is missing and hands out .template pairs for what the user
+# already wrote, the user's agent converts and merges, and from then on every
+# apply has nothing to do.
+d="$(sandbox)"
+vi "${d}" --apply -y
+rc_is "an empty untracked project applies cleanly" 0
+vi "${d}" --apply -y
+has   "and a second apply has nothing to sync" "Everything is up to date"
+
+d="$(sandbox)"
+printf '# My rules\n\nUse tabs.\n' > "${d}/CLAUDE.md"
+mkdir -p "${d}/.claude"
+printf '{"permissions":{"allow":["Bash(ls)"]}}\n' > "${d}/.claude/settings.json"
+cp "${d}/CLAUDE.md" "${d}/claude.orig"
+cp "${d}/.claude/settings.json" "${d}/settings.orig"
+vi "${d}" --apply -y
+rc_is "a project with files of its own applies cleanly" 0
+has   "its legacy CLAUDE.md is handed out for conversion" "CLAUDE.md.template  ->  CLAUDE.md"
+has   "its own settings.json is handed out for merging"  ".claude/settings.json.template  ->  .claude/settings.json"
+if diff -q "${d}/CLAUDE.md" "${d}/claude.orig" >/dev/null \
+  && diff -q "${d}/.claude/settings.json" "${d}/settings.orig" >/dev/null; then
+  ok "the user's own files are not touched"
+else
+  ko "the user's own files are not touched" "CLAUDE.md or settings.json changed"
+fi
+
+# Stand in for the agent: wrap the template's block around the user's text,
+# take the template's settings, and delete the .template files.
+{ sed -n '/^<CLAUDE_BASE>$/,/^<\/CLAUDE_BASE>$/p' "${d}/CLAUDE.md.template"
+  printf '\n'; cat "${d}/claude.orig"; } > "${d}/CLAUDE.md"
+mv "${d}/.claude/settings.json.template" "${d}/.claude/settings.json"
+rm "${d}/CLAUDE.md.template"
+vi "${d}" --apply -y
+has   "after the agent's round the project is settled" "Everything is up to date"
+hasnt "and nothing is handed out again"                ".template"
+vi "${d}" --apply -y
+has   "and it stays settled"                           "Everything is up to date"
 
 echo
 if [[ "${FAIL}" -eq 0 ]]; then

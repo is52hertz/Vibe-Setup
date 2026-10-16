@@ -24,6 +24,12 @@
 # The file is written by the tool and read by the tool; it is not documentation
 # and is not meant to be edited by hand.
 #
+# Beside it, .vibe-init/pending/<rel> keeps the exact template handed to the
+# user's AI agent as <rel>.template. The merge happens outside this tool, and
+# the only thing that comes back is the agent deleting that .template, as the
+# prompt asks. Once it is gone, the kept copy is the version the user merged
+# against — the right merge base from then on (see lib/sync.sh).
+#
 # Compatible with macOS Bash 3.2.
 
 VIBE_STATE_DIR_NAME=".vibe-init"
@@ -39,9 +45,18 @@ STATE_RECORDS=()
 STATE_SET_PROFILE=""
 STATE_SET_INTEGRATIONS=""
 STATE_SET_CC=""
+STATE_SET_CHECKLIST=""
+# "paused" after this tool ran `trellis ablate`, "active" after a restore,
+# "none" after an uninstall. Only read while .trellis/ is absent, to tell a
+# paused project from one that never had Trellis.
+STATE_SET_TRELLIS=""
 
 state_dir()  { printf '%s\n' "${1}/${VIBE_STATE_DIR_NAME}"; }
 state_path() { printf '%s\n' "${1}/${VIBE_STATE_DIR_NAME}/manifest"; }
+
+# Where the template handed out as <rel>.template is kept until it is resolved.
+# Usage: state_pending_path <project_dir> <relative_path>
+state_pending_path() { printf '%s\n' "${1}/${VIBE_STATE_DIR_NAME}/pending/${2}"; }
 
 # True when the project carries a manifest, i.e. vibe-init knows what it wrote.
 state_is_tracked() { [[ -f "$(state_path "$1")" ]]; }
@@ -115,6 +130,13 @@ state_block_hash() {
     '$1 == "block" && $2 == r && $3 == t && $4 == i { print $5; exit }' "${manifest}"
 }
 
+# True when a template was handed out as <rel>.template and the agent is done
+# with it: the kept copy exists and the .template beside the file is gone.
+# Usage: state_pending_resolved <project_dir> <relative_path>
+state_pending_resolved() {
+  [[ -f "$(state_pending_path "$1" "$2")" && ! -e "${1}/${2}.template" ]]
+}
+
 # -----------------------------------------------------------------------------
 # Writing
 # -----------------------------------------------------------------------------
@@ -145,23 +167,48 @@ state_record_all_blocks() {
   done < <(list_blocks "${file}")
 }
 
+# Keep the template just handed out as <rel>.template. Honors --dry-run.
+# Usage: state_save_pending <project_dir> <relative_path> <template_file>
+state_save_pending() {
+  local pending=""
+
+  [[ "${DRY_RUN}" -eq 1 ]] && return 0
+  pending="$(state_pending_path "$1" "$2")"
+  mkdir -p "$(dirname -- "${pending}")" && cp "$3" "${pending}" \
+    || warn "could not keep the handed-out template for $2"
+}
+
+# Forget the kept template for <rel>, once it has become the merge base.
+# Usage: state_drop_pending <project_dir> <relative_path>
+state_drop_pending() {
+  [[ "${DRY_RUN}" -eq 1 ]] && return 0
+  rm -f "$(state_pending_path "$1" "$2")"
+}
+
 # Write the staged records into the project's manifest, keeping every record
 # this run did not touch. Honors --dry-run. Also makes sure a git-tracked
 # project ignores the directory, so the tool's private bookkeeping never turns
 # up in the user's diffs.
+#
+# A run with nothing to record still writes the manifest. It used to return
+# early instead, and an old project whose every file needed review or a format
+# conversion — exactly the project that most needs a merge base — never got a
+# .vibe-init/ at all.
 # Usage: state_flush <project_dir>
 state_flush() {
   local project_dir="$1"
   local dir="" manifest="" tmp_new="" tmp_out="" rec=""
-  local profile="" integrations="" cc="" created=""
-
-  [[ "${#STATE_RECORDS[@]}" -gt 0 ]] || return 0
+  local profile="" integrations="" cc="" checklist="" trellis="" created=""
 
   dir="$(state_dir "${project_dir}")"
   manifest="$(state_path "${project_dir}")"
 
   if [[ "${DRY_RUN}" -eq 1 ]]; then
-    info "dry-run: record ${#STATE_RECORDS[@]} content hashes in ${VIBE_STATE_DIR_NAME}/manifest"
+    if [[ "${#STATE_RECORDS[@]}" -gt 0 ]]; then
+      info "dry-run: record ${#STATE_RECORDS[@]} content hashes in ${VIBE_STATE_DIR_NAME}/manifest"
+    else
+      info "dry-run: write ${VIBE_STATE_DIR_NAME}/manifest"
+    fi
     STATE_RECORDS=()
     ensure_state_gitignored "${project_dir}"
     return
@@ -173,6 +220,8 @@ state_flush() {
   profile="${STATE_SET_PROFILE:-$(state_get "${project_dir}" profile)}"
   integrations="${STATE_SET_INTEGRATIONS:-$(state_get "${project_dir}" integrations)}"
   cc="${STATE_SET_CC:-$(state_get "${project_dir}" cc_workflow)}"
+  checklist="${STATE_SET_CHECKLIST:-$(state_get "${project_dir}" test_checklist)}"
+  trellis="${STATE_SET_TRELLIS:-$(state_get "${project_dir}" trellis)}"
   created="$(state_get "${project_dir}" created)"
   [[ -n "${created}" ]] || created="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
@@ -180,10 +229,17 @@ state_flush() {
 
   tmp_new="${manifest}.new.$$"
   tmp_out="${manifest}.out.$$"
-  : > "${tmp_new}"
-  for rec in "${STATE_RECORDS[@]}"; do
-    printf '%s\n' "${rec}" >> "${tmp_new}"
-  done
+  # One record per key, the last one staged winning: a run can stage the same
+  # block twice — the base a resolved merge promotes, then what this sync found
+  # — and two lines for one key would leave the lookup to sort order.
+  for rec in "${STATE_RECORDS[@]+"${STATE_RECORDS[@]}"}"; do
+    printf '%s\n' "${rec}"
+  done | awk -F'\t' '
+    { key = ($1 == "file") ? $1 FS $2 : $1 FS $2 FS $3 FS $4
+      if (!(key in last)) order[++n] = key
+      last[key] = $0 }
+    END { for (i = 1; i <= n; i++) print last[order[i]] }
+  ' > "${tmp_new}"
 
   {
     printf '# vibe-init state — written by the tool, do not edit by hand\n'
@@ -194,12 +250,19 @@ state_flush() {
     printf 'profile\t%s\n'      "${profile}"
     printf 'integrations\t%s\n' "${integrations}"
     printf 'cc_workflow\t%s\n'  "${cc}"
+    printf 'test_checklist\t%s\n' "${checklist}"
+    printf 'trellis\t%s\n'      "${trellis}"
     # Old records first, minus the exact keys this run re-recorded, then the new
     # ones. Sorted so a manifest diff stays readable.
     {
       if [[ -f "${manifest}" ]]; then
+        # FILENAME == ARGV[1], not NR == FNR: a run can stage nothing at all
+        # (record_trellis_state only sets a header field), and with an empty
+        # first file NR == FNR stays true for every line of the second one —
+        # which silently dropped every hash in the manifest and took the merge
+        # base with it, turning the next sync's every file into a conflict.
         awk -F'\t' '
-          NR == FNR {
+          FILENAME == ARGV[1] {
             if ($1 == "file")       seen[$1 FS $2] = 1
             else if ($1 == "block") seen[$1 FS $2 FS $3 FS $4] = 1
             next

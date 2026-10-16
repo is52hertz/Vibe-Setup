@@ -2,8 +2,8 @@
 
 A small Bash CLI that bootstraps a project for AI-assisted development. It seeds
 a shared set of AI-agent instruction files (`AGENTS.md`, `CLAUDE.md`), a
-secrets-deny Claude Code settings file, and a manual test checklist — and can
-optionally install and initialize [Trellis](https://www.npmjs.com/package/@mindfoldhq/trellis).
+secrets-deny Claude Code settings file, and optional extras such as a manual
+test checklist — and can optionally install and initialize [Trellis](https://www.npmjs.com/package/@mindfoldhq/trellis).
 The files under `templates/` are the source of truth the script assembles each
 project's files from.
 
@@ -74,9 +74,19 @@ project versions, git, Trellis and its platforms, CC-Workflow, and whether
 leads with whatever has work:
 
 - **Sync template files** — pick from the files that have something to do.
-- **Trellis management** — add an AI platform, `trellis update`, upgrade the CLI.
-  When the project is already at the CLI's version, the update asks first and
-  defaults to no.
+- **Trellis management** — add an AI platform, `trellis update`, upgrade the CLI,
+  pause, or uninstall. When the project is already at the CLI's version, the
+  update asks first and defaults to no.
+  - **Pause** runs `trellis ablate`: every Trellis file leaves the project and a
+    recovery copy is kept in `~/.trellis` on this machine. **Restore** (offered
+    while paused) runs `trellis restore` and brings tasks, specs, journals and
+    memory back exactly as they were. Use it to switch away mid-project.
+  - **Uninstall** runs `trellis uninstall`, which deletes `.trellis/` for good.
+    If the work under it is not committed, vibe-init says so and asks first
+    (default no).
+  - Trellis asks for its own confirmation either way. Afterwards vibe-init
+    offers to remove (or, after a restore, re-add) the Trellis block in
+    `AGENTS.md`.
 - **Toggle CC-Workflow** / **Toggle Trellis block** — add or remove the feature.
   Turning one off removes exactly the block it added; CC-Workflow's own document
   is kept as `CC-Cowork-Workflow.md.disabled`.
@@ -100,15 +110,31 @@ tell a template change from your own edits:
 
 Nothing you wrote is ever overwritten. A project with no manifest yet (an older
 one, or a fresh clone) has no merge base, so its first sync treats every
-existing file as needing review and adopts what already matches — later runs are
-quiet. `--on-exists overwrite|template|skip` bypasses the merge and applies the
-older blunt file-level policy instead.
+existing file that differs as needing review, and records what already matches.
+`--on-exists overwrite|template|skip` bypasses the merge and applies the older
+blunt file-level policy instead.
+
+**How vibe-init learns a merge is done.** The merge happens in your AI agent, not
+in vibe-init, so the prompt tells the agent to delete the `.template` files once
+you confirm — that deletion is the signal. vibe-init keeps a copy of each
+template it handed out; on the next run, a `.template` that is gone means that
+version was merged, and it becomes the merge base. From then on, blocks you kept
+your own way stay quiet, and a later template change is compared against what
+you actually merged. Leave the `.template` in place until the merge is really
+done: deleting it early reads as "keep my version".
 
 `.vibe-init/` is local bookkeeping and is added to the project's `.gitignore`.
 
 An `AGENTS.md` or `CLAUDE.md` written before the `<TAG>` format has no blocks to
-merge. It gets its `<name>.template` beside it and a separate prompt asking your
-AI agent to restructure it — the script never rewrites the file itself.
+merge, so upgrading it takes two rounds — the script never rewrites the file
+itself:
+
+1. **Convert.** The sync writes `<name>.template` and a prompt asking your AI
+   agent to wrap your existing sections in the new `<TAG>` blocks without
+   changing a word. Check the diff, then let the agent delete the `.template`.
+2. **Merge.** Run `vibe-init --apply` again. Now that the file has blocks, the
+   sync compares them one by one and prints the ordinary merge prompt, naming
+   only the blocks that still differ from the template.
 
 ### Options
 
@@ -120,6 +146,7 @@ AI agent to restructure it — the script never rewrites the file itself.
 | `--profile service\|tool\|ask` | Profile for a new project: `service` or `tool` assembles `AGENTS.md` with just that rule set; `ask` (the `-y` / non-TTY default) keeps all of them for the project's AI agent to resolve. Not valid with `--apply`. |
 | `--trellis yes\|no` | Whether to install/initialize Trellis. |
 | `--cc-workflow yes\|no` | Whether to include `CC-Cowork-Workflow.md` and its `CLAUDE.md` reference (default: no). With `--apply`, the default follows the project: the file is offered only if the project already has it. |
+| `--test-checklist yes\|no` | Whether to include `Test/templates-test-checklist.html`, the standalone manual-test page (default: no). With `--apply`, the default follows the project the same way. |
 | `--developer-name NAME` | Developer identity passed to `trellis init -u NAME`. Defaults to `$DEVELOPER_NAME`, then `git config user.name`, then `$USER`. |
 | `--platforms "FLAGS"` | Trellis platform flags, e.g. `"--claude --codex"`. `none` passes no platform flags. |
 | `--template-dir DIR` | Override the template root — the directory holding `blocks/` and `common/` (default: `templates/` next to the script). |
@@ -138,8 +165,8 @@ AI agent to restructure it — the script never rewrites the file itself.
 | `CLAUDE.md` | Imports `AGENTS.md`; holds Claude Code-specific instructions only when needed. |
 | `CC-Cowork-Workflow.md` | Optional (`--cc-workflow yes`): how Claude Code delegates execution and review to an external executor. |
 | `.claude/settings.json` | Denies agents from reading secrets (`.env*`, `secrets/**`, `*.pem`/`*.key`/`*.p12`/`*.pfx`). |
-| `Test/templates-test-checklist.html` | A manual test checklist. |
-| `.vibe-init/manifest` | What vibe-init last wrote, as content hashes — the merge base for `--apply`. Added to `.gitignore` in a git project. |
+| `Test/templates-test-checklist.html` | Optional (`--test-checklist yes`): a standalone manual test checklist page. |
+| `.vibe-init/` | `manifest`: what vibe-init last wrote, as content hashes — the merge base for `--apply`. `pending/`: the templates handed out as `.template`, until their merge is done. Added to `.gitignore` in a git project. |
 
 ## Templates
 
@@ -149,11 +176,13 @@ There is one set of templates, assembled per run rather than copied as-is:
   `metadata`, `product`, `project_phase`, `core_rules`, then the profile
   (`profiles/`, plus `profile_setup` when the profile is `ask`), then any
   integrations (`integrations/`, e.g. Trellis). `features/cc-workflow/` holds
-  `CC-Cowork-Workflow.md` — a plain and a Trellis variant — and the block it adds
-  to `CLAUDE.md`.
-- **`templates/common/`** — the static files: `.claude/settings.json`, the test
-  checklist, and the `CLAUDE.md` skeleton (the CC-Workflow block, when on, is
-  appended to it).
+  `CC-Cowork-Workflow.md` — a plain and a Trellis variant — the `codex-run`
+  subagent it delegates through, and the block it adds to `CLAUDE.md`;
+  `features/test-checklist/` holds the manual test page.
+- **`templates/common/`** — the static files every project gets:
+  `.claude/settings.json` and the `CLAUDE.md` skeleton (the CC-Workflow block,
+  when on, is appended to it). Anything optional lives under `features/`
+  instead, because `common/` is copied whole and cannot be switched off.
 
 Adding a profile or an integration is dropping a file into `profiles/` or
 `integrations/`; nothing in the script lists them. Because every block is

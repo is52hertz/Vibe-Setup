@@ -182,6 +182,11 @@ copy_template_file() {
     if [[ -n "${marker}" ]] \
         && [[ "$(file_format "${destination}" "${marker}")" == "legacy" ]]; then
       APPLIED_LEGACY+=("${relative_path}")
+    else
+      # Keep what was handed out: once the agent deletes the .template, this is
+      # the version the file was merged against (see lib/sync.sh). A conversion
+      # keeps nothing, because it only restructures the file.
+      state_save_pending "${destination%/"${relative_path}"}" "${relative_path}" "${source}"
     fi
   fi
 }
@@ -470,13 +475,16 @@ apply_templates() {
       info "no files selected; nothing to apply"
       return
     fi
+    sync_adopt "${project_dir}"
     sync_reset
+    state_flush "${project_dir}"
     ui_ok "Everything is up to date — nothing to sync."
     offer_copy_anyway "${project_dir}"
     return
   fi
 
   if [[ -z "${ON_EXISTS}" ]]; then
+    sync_adopt "${project_dir}" "${APPLY_SELECTED[@]}"
     sync_run "${project_dir}" apply "${APPLY_SELECTED[@]}"
     sync_report
     return
@@ -536,7 +544,8 @@ suggest_template_merges() {
       printf '%s\n' "whether it belongs and where. Where the two genuinely conflict, do not choose"
       printf '%s\n' "silently — list each conflict and ask me to decide. When you ask me anything,"
       printf '%s\n' "write it in Simplified Chinese (中文); keep code, identifiers, and your own"
-      printf '%s\n' "reasoning in English. After I confirm, delete the .template files."
+      printf '%s\n' "reasoning in English. After I confirm, delete the .template files — that is"
+      printf '%s\n' "how vibe-init knows the merge is done, so do not delete them before."
       ui_copy_close
     } >&2
   fi
@@ -571,6 +580,11 @@ suggest_template_merges() {
       printf '%s\n' ".template files."
       ui_copy_close
     } >&2
+    # The conversion only restructures; the content merge is a second round, and
+    # nothing else on screen says it exists.
+    info "once the conversion is done and the .template files are deleted, run"
+    info "vibe-init --apply again: that sync compares the new blocks with the"
+    info "templates and prints the prompt for merging their content."
   fi
 }
 
@@ -587,6 +601,7 @@ show_project_diagnostics() {
   local trellis_level="off" trellis_state="Not configured" trellis_detail=""
   local plat_level="off"    plat_state="None"             plat_detail=""
   local cc_level="off"      cc_state="Disabled"           cc_detail=""
+  local list_level="off"    list_state="Not included"     list_detail=""
   # "Missing" is dim, not red: on a directory being seeded for the first time
   # both of these are absent and the sync is about to create them, so red here
   # would fire on the most ordinary run there is. The action shows up green in
@@ -638,6 +653,10 @@ show_project_diagnostics() {
           ;;
       esac
     fi
+  elif trellis_is_paused "${project_dir}"; then
+    trellis_level="todo"
+    trellis_state="Paused"
+    trellis_detail="restore it from Trellis management"
   elif [[ "${c_ver}" != "none" ]]; then
     trellis_level="todo"
     trellis_state="Not initialized"
@@ -651,6 +670,13 @@ show_project_diagnostics() {
   if [[ -f "${project_dir}/CC-Cowork-Workflow.md" ]]; then
     cc_level="ok"
     cc_state="Active"
+  fi
+
+  # Test checklist. Absent is a choice, not a problem, so it reads off rather
+  # than todo — nothing here is waiting on the user.
+  if [[ -f "${project_dir}/Test/templates-test-checklist.html" ]]; then
+    list_level="ok"
+    list_state="Active"
   fi
 
   # AGENTS.md / CLAUDE.md format. A legacy file has no <TAG> blocks for the
@@ -684,10 +710,11 @@ show_project_diagnostics() {
   ui_kv_state "Trellis"     "${trellis_level}" "${trellis_state}" "${trellis_detail}"
   ui_kv_state "Platforms"   "${plat_level}"    "${plat_state}"    "${plat_detail}"
   ui_kv_state "CC-Workflow" "${cc_level}"      "${cc_state}"      "${cc_detail}"
+  ui_kv_state "Test checklist" "${list_level}" "${list_state}"    "${list_detail}"
   ui_kv_state "AGENTS.md"   "${agents_level}"  "${agents_state}"  "${agents_detail}"
   ui_kv_state "CLAUDE.md"   "${claude_level}"  "${claude_state}"  "${claude_detail}"
   if [[ "${agents_level}" == "todo" || "${claude_level}" == "todo" ]]; then
-    ui_kv_state "Format upgrade" "todo" "sync once, then follow the printed agent prompt"
+    ui_kv_state "Format upgrade" "todo" "sync, have your agent convert, then sync again to merge"
   fi
 }
 
@@ -717,12 +744,32 @@ record_block_as_written() {
 # A CLAUDE.md written before the block markers existed carries the reference as
 # plain prose. That cannot be removed safely by machine, so it is reported for
 # the user to delete rather than silently left behind as a dangling pointer.
+# Move a file aside as <file>.disabled without ever clobbering an earlier
+# archive. Disabling a feature twice would otherwise destroy what the first
+# disable saved — the one copy of the user's own edits. Echoes the path used.
+# Usage: archive_disabled <file>
+archive_disabled() {
+  local file="$1"
+  local target="${file}.disabled"
+  local n=2
+
+  while [[ -e "${target}" ]]; do
+    target="${file}.disabled.${n}"
+    n=$(( n + 1 ))
+  done
+
+  mv "${file}" "${target}"
+  printf '%s\n' "${target}"
+}
+
 toggle_cc_workflow() {
   local project_dir="$1"
   local claude_md="${project_dir}/CLAUDE.md"
   local workflow="${project_dir}/CC-Cowork-Workflow.md"
+  local agent="${project_dir}/.claude/agents/codex-run.md"
   local ref_block="${TEMPLATE_ROOT}/blocks/features/cc-workflow/claude-ref.md"
-  local variant="" source=""
+  local agent_src="${TEMPLATE_ROOT}/blocks/features/cc-workflow/agent.md"
+  local variant="" source="" archived=""
 
   if [[ -f "${workflow}" ]]; then
     ui_warn "CC-Workflow is currently ENABLED."
@@ -730,12 +777,19 @@ toggle_cc_workflow() {
 
     if [[ "${DRY_RUN}" -eq 1 ]]; then
       ui_info "dry-run: mv ${workflow} -> ${workflow}.disabled"
+      [[ -f "${agent}" ]] && ui_info "dry-run: mv ${agent} -> ${agent}.disabled"
       ui_info "dry-run: remove the CC-Workflow block from ${claude_md}"
       return
     fi
 
-    mv "${workflow}" "${workflow}.disabled"
-    ui_ok "Archived the workflow file as CC-Cowork-Workflow.md.disabled"
+    archived="$(archive_disabled "${workflow}")"
+    ui_ok "Archived the workflow file as $(basename -- "${archived}")"
+    # Archive rather than delete, for the same reason as the document: the user
+    # may have tuned it, and a disabled feature should be recoverable.
+    if [[ -f "${agent}" ]]; then
+      archived="$(archive_disabled "${agent}")"
+      ui_ok "Archived the delegation subagent as $(basename -- "${archived}")"
+    fi
 
     if [[ ! -f "${claude_md}" ]]; then
       return
@@ -769,11 +823,27 @@ toggle_cc_workflow() {
 
   if [[ "${DRY_RUN}" -eq 1 ]]; then
     ui_info "dry-run: copy ${source} -> ${workflow}"
+    ui_info "dry-run: copy ${agent_src} -> ${agent}"
     ui_info "dry-run: reference the CC-Workflow block from ${claude_md}"
     return
   fi
 
   cp "${source}" "${workflow}"
+  if [[ -f "${agent_src}" ]]; then
+    ensure_dir "$(dirname -- "${agent}")"
+    # The workflow document is known absent on this branch, but the agent file
+    # is not: a user can carry their own codex-run.md with no workflow document
+    # at all. Theirs wins, and the tool's copy lands beside it.
+    if [[ -e "${agent}" ]]; then
+      cp "${agent_src}" "${agent}.template"
+      ui_warn "Kept your existing codex-run.md; the tool's copy is beside it as codex-run.md.template."
+    else
+      cp "${agent_src}" "${agent}"
+    fi
+  else
+    ui_warn "Delegation subagent template not found: ${agent_src}"
+    ui_warn "The workflow document will point at an agent this project does not have."
+  fi
   if [[ -f "${claude_md}" ]]; then
     append_block_if_missing "${claude_md}" "FEATURE" "cc-workflow" "${ref_block}"
   else
@@ -783,11 +853,158 @@ toggle_cc_workflow() {
   # next sync would see an unrecorded block and call our own edit a conflict.
   record_block_as_written "${project_dir}" "CLAUDE.md" "FEATURE" "cc-workflow"
   ui_ok "CC-Workflow enabled (${variant} variant) and referenced from CLAUDE.md."
+  # Agent definitions are read when a session starts, so the file that just
+  # landed is invisible to the session that asked for it.
+  ui_info "Restart Claude Code once before calling codex-run — agent definitions load at session start."
+}
+
+# The manual test checklist, added or archived. A standalone HTML page with no
+# block in any other file, so unlike CC-Workflow there is nothing to unwire —
+# the file is the whole feature.
+toggle_test_checklist() {
+  local project_dir="$1"
+  local checklist="${project_dir}/Test/templates-test-checklist.html"
+  local source="${TEMPLATE_ROOT}/blocks/features/test-checklist/checklist.html"
+  local archived=""
+
+  if [[ -f "${checklist}" ]]; then
+    ui_warn "The test checklist is currently INCLUDED."
+    ask_yes_no "Remove it and archive the file?" "yes" || return
+
+    if [[ "${DRY_RUN}" -eq 1 ]]; then
+      ui_info "dry-run: mv ${checklist} -> ${checklist}.disabled"
+      return
+    fi
+
+    archived="$(archive_disabled "${checklist}")"
+    ui_ok "Archived the checklist as $(basename -- "${archived}")"
+    return
+  fi
+
+  ui_info "The test checklist is currently NOT INCLUDED."
+  ask_yes_no "Add the manual test checklist to this project?" "yes" || return
+
+  if [[ ! -f "${source}" ]]; then
+    ui_error "Test checklist template not found: ${source}"
+    return
+  fi
+
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    ui_info "dry-run: copy ${source} -> ${checklist}"
+    return
+  fi
+
+  ensure_dir "$(dirname -- "${checklist}")"
+  # The user's own page wins, the same contract every managed file gets.
+  if [[ -e "${checklist}" ]]; then
+    cp "${source}" "${checklist}.template"
+    ui_warn "Kept your existing checklist; the tool's copy is beside it as .template."
+  else
+    cp "${source}" "${checklist}"
+    ui_ok "Added Test/templates-test-checklist.html."
+  fi
 }
 
 # -----------------------------------------------------------------------------
 # Trellis Operations Menu
 # -----------------------------------------------------------------------------
+
+# Record what this tool just did to Trellis in the manifest header — "paused",
+# "active" or "none" — so a project with no .trellis/ can be told apart as
+# paused rather than never set up.
+# Usage: record_trellis_state <project_dir> <state>
+record_trellis_state() {
+  STATE_SET_TRELLIS="$2"
+  state_flush "$1"
+}
+
+# True when this tool paused Trellis here and .trellis/ is still gone.
+# Usage: trellis_is_paused <project_dir>
+trellis_is_paused() {
+  ! trellis_has_project "$1" && [[ "$(state_get "$1" trellis)" == "paused" ]]
+}
+
+# Once Trellis has left the project, paused or uninstalled, two things still
+# point at it: the AGENTS.md block telling every agent to defer to Trellis, and
+# a Trellis-variant CC-Cowork-Workflow.md that spells its loop in Trellis
+# commands. The block is offered for removal; the document is the user's to
+# switch, so it is only named.
+# Usage: after_trellis_left <project_dir>
+after_trellis_left() {
+  local project_dir="$1"
+  local workflow="${project_dir}/CC-Cowork-Workflow.md"
+
+  if has_block "${project_dir}/AGENTS.md" "INTEGRATION" "trellis"; then
+    ui_info "AGENTS.md still tells agents to follow Trellis."
+    if ask_yes_no "Remove the Trellis integration block from AGENTS.md?" "yes"; then
+      remove_trellis_block "${project_dir}"
+    fi
+  fi
+  if [[ -f "${workflow}" ]] && grep -q 'trellis-check' "${workflow}"; then
+    ui_warn "CC-Cowork-Workflow.md still describes the Trellis co-work loop. Toggle"
+    ui_warn "CC-Workflow off and on again to switch it to the plain variant."
+  fi
+}
+
+# The mirror of after_trellis_left, once a restore has brought Trellis back.
+# Usage: after_trellis_restored <project_dir>
+after_trellis_restored() {
+  local project_dir="$1"
+
+  [[ -f "${project_dir}/AGENTS.md" ]] || return 0
+  has_block "${project_dir}/AGENTS.md" "INTEGRATION" "trellis" && return 0
+  if ask_yes_no "Add the Trellis integration block back to AGENTS.md?" "yes"; then
+    add_trellis_block "${project_dir}"
+  fi
+}
+
+# Trellis management for a project with no .trellis/: it either never had
+# Trellis or was paused. Restore is offered either way, because a pause made
+# with the Trellis CLI directly leaves no record here — Trellis itself says so
+# when there is nothing to restore. It leads only when this tool recorded one.
+# Usage: manage_trellis_absent <project_dir>
+manage_trellis_absent() {
+  local project_dir="$1"
+  local choice="" default_choice=""
+  local -a actions=()
+
+  if trellis_is_paused "${project_dir}"; then
+    ui_info "Trellis is paused in this project."
+    actions+=("$(prompt_opt restore "Restore Trellis"          "trellis restore")")
+    actions+=("$(prompt_opt init    "Initialize Trellis"       "trellis init")")
+  else
+    ui_warn "Trellis is not initialized in this project."
+    actions+=("$(prompt_opt init    "Initialize Trellis"       "trellis init")")
+    actions+=("$(prompt_opt restore "Restore a paused Trellis" "trellis restore")")
+  fi
+  actions+=("$(prompt_opt back "Back")")
+
+  # A recorded pause is the user's own Trellis waiting to come back, so restore
+  # may lead. A first init writes a whole tree into the project, and on the
+  # dashboard this row becomes the default the moment the sync has nothing
+  # left, so Enter-Enter-Enter must not land on it: the cursor starts on Back.
+  default_choice="back"
+  if trellis_is_paused "${project_dir}"; then
+    default_choice="restore"
+  fi
+  choice="$(ui_select "Trellis management" "${default_choice}" "${actions[@]}")"
+  case "${choice}" in
+    init)
+      resolve_trellis_setup
+      if [[ "${TRELLIS_READY}" -eq 1 ]]; then
+        run_trellis_init "${project_dir}"
+      fi
+      ;;
+    restore)
+      trellis_restore_project "${project_dir}" || true
+      if trellis_has_project "${project_dir}"; then
+        record_trellis_state "${project_dir}" active
+        ui_ok "Trellis is restored."
+        after_trellis_restored "${project_dir}"
+      fi
+      ;;
+  esac
+}
 
 manage_trellis() {
   local project_dir="$1"
@@ -797,22 +1014,18 @@ manage_trellis() {
   local -a platforms=()
 
   if ! trellis_has_project "${project_dir}"; then
-    ui_warn "Trellis is not initialized in this project."
-    if ask_yes_no "Initialize Trellis now?" "yes"; then
-      resolve_trellis_setup
-      if [[ "${TRELLIS_READY}" -eq 1 ]]; then
-        run_trellis_init "${project_dir}"
-      fi
-    fi
+    manage_trellis_absent "${project_dir}"
     return
   fi
 
   while true; do
     actions=()
-    actions+=("$(prompt_opt platform "Add an AI platform"      "trellis init --<platform>")")
-    actions+=("$(prompt_opt update   "Update the project"      "trellis update")")
-    actions+=("$(prompt_opt upgrade  "Upgrade the Trellis CLI" "npm install -g")")
-    actions+=("$(prompt_opt back     "Back")")
+    actions+=("$(prompt_opt platform  "Add an AI platform"      "trellis init --<platform>")")
+    actions+=("$(prompt_opt update    "Update the project"      "trellis update")")
+    actions+=("$(prompt_opt upgrade   "Upgrade the Trellis CLI" "npm install -g")")
+    actions+=("$(prompt_opt pause     "Pause Trellis"           "trellis ablate, restorable")")
+    actions+=("$(prompt_opt uninstall "Uninstall Trellis"       "trellis uninstall, deletes .trellis/")")
+    actions+=("$(prompt_opt back      "Back")")
 
     choice="$(ui_select "Trellis management" "back" "${actions[@]}")"
     case "${choice}" in
@@ -835,6 +1048,26 @@ manage_trellis() {
       upgrade)
         trellis_upgrade_cli
         ;;
+      pause)
+        # Judge by what is on disk, not the exit status: the user can decline
+        # at Trellis's own prompt, and --dry-run removes nothing.
+        trellis_pause_project "${project_dir}" || true
+        if ! trellis_has_project "${project_dir}"; then
+          record_trellis_state "${project_dir}" paused
+          ui_ok "Trellis is paused. Restore it from Trellis management."
+          after_trellis_left "${project_dir}"
+          break
+        fi
+        ;;
+      uninstall)
+        trellis_uninstall_project "${project_dir}" || true
+        if ! trellis_has_project "${project_dir}"; then
+          record_trellis_state "${project_dir}" none
+          ui_ok "Trellis is uninstalled from this project."
+          after_trellis_left "${project_dir}"
+          break
+        fi
+        ;;
       *)
         break
         ;;
@@ -846,40 +1079,37 @@ manage_trellis() {
 # Trellis integration block
 # -----------------------------------------------------------------------------
 
-# Add or drop <INTEGRATION id="trellis"> in the project's AGENTS.md — the block
-# that tells every agent how this file and Trellis divide authority. Rebuilds the
-# template set afterwards so a later sync in the same session stays consistent.
-toggle_trellis_integration() {
+# Drop <INTEGRATION id="trellis"> from AGENTS.md. The caller has asked already.
+# Rebuilds the template set afterwards so a later sync in the same session
+# stays consistent.
+# Usage: remove_trellis_block <project_dir>
+remove_trellis_block() {
+  local project_dir="$1"
+  local agents="${project_dir}/AGENTS.md"
+
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    ui_info "dry-run: remove <INTEGRATION id=\"trellis\"> from ${agents}"
+  elif remove_block "${agents}" "INTEGRATION" "trellis"; then
+    TEMPLATE_INTEGRATIONS=""
+    prepare_template_set "ask" "${TEMPLATE_INTEGRATIONS}" "${CC_WORKFLOW_ENABLED}"
+    ui_ok "Removed the Trellis integration block from AGENTS.md."
+  else
+    ui_error "Could not remove the block; AGENTS.md was left untouched."
+  fi
+}
+
+# Append <INTEGRATION id="trellis"> to AGENTS.md and record it as written. The
+# caller has asked already.
+# Usage: add_trellis_block <project_dir>
+add_trellis_block() {
   local project_dir="$1"
   local agents="${project_dir}/AGENTS.md"
   local block="${TEMPLATE_ROOT}/blocks/integrations/trellis.md"
 
-  if [[ ! -f "${agents}" ]]; then
-    ui_warn "No AGENTS.md in this project yet — sync the template files first."
-    return
-  fi
   if [[ ! -f "${block}" ]]; then
     ui_error "Trellis integration block not found: ${block}"
     return
   fi
-
-  if has_block "${agents}" "INTEGRATION" "trellis"; then
-    ui_warn "AGENTS.md currently carries the Trellis integration block."
-    ask_yes_no "Remove it from AGENTS.md?" "no" || return
-    if [[ "${DRY_RUN}" -eq 1 ]]; then
-      ui_info "dry-run: remove <INTEGRATION id=\"trellis\"> from ${agents}"
-    elif remove_block "${agents}" "INTEGRATION" "trellis"; then
-      TEMPLATE_INTEGRATIONS=""
-      prepare_template_set "ask" "${TEMPLATE_INTEGRATIONS}" "${CC_WORKFLOW_ENABLED}"
-      ui_ok "Removed the Trellis integration block from AGENTS.md."
-    else
-      ui_error "Could not remove the block; AGENTS.md was left untouched."
-    fi
-    return
-  fi
-
-  ui_info "AGENTS.md has no Trellis integration block."
-  ask_yes_no "Add it to AGENTS.md?" "yes" || return
   if [[ "${DRY_RUN}" -eq 1 ]]; then
     ui_info "dry-run: append <INTEGRATION id=\"trellis\"> to ${agents}"
   elif append_block_if_missing "${agents}" "INTEGRATION" "trellis" "${block}"; then
@@ -890,6 +1120,35 @@ toggle_trellis_integration() {
   else
     ui_error "Could not append the block; AGENTS.md was left untouched."
   fi
+}
+
+# Add or drop <INTEGRATION id="trellis"> in the project's AGENTS.md — the block
+# that tells every agent how this file and Trellis divide authority. It is only
+# that block: removing it leaves Trellis set up, which is easy to mistake for
+# taking Trellis out, so the way to do that is named before the question.
+toggle_trellis_integration() {
+  local project_dir="$1"
+  local agents="${project_dir}/AGENTS.md"
+
+  if [[ ! -f "${agents}" ]]; then
+    ui_warn "No AGENTS.md in this project yet — sync the template files first."
+    return
+  fi
+
+  if has_block "${agents}" "INTEGRATION" "trellis"; then
+    ui_warn "AGENTS.md currently carries the Trellis integration block."
+    if trellis_has_project "${project_dir}"; then
+      ui_info "This only edits AGENTS.md; Trellis itself stays set up. To take it out"
+      ui_info "of the project, pause or uninstall it from Trellis management."
+    fi
+    ask_yes_no "Remove it from AGENTS.md?" "no" || return
+    remove_trellis_block "${project_dir}"
+    return
+  fi
+
+  ui_info "AGENTS.md has no Trellis integration block."
+  ask_yes_no "Add it to AGENTS.md?" "yes" || return
+  add_trellis_block "${project_dir}"
 }
 
 # -----------------------------------------------------------------------------
@@ -931,6 +1190,10 @@ trellis_menu_note() {
   cli_version="$(trellis_cli_version || true)"
   if [[ -z "${cli_version}" ]]; then
     printf 'not installed\tbad\n'
+    return
+  fi
+  if trellis_is_paused "${project_dir}"; then
+    printf 'paused\ttodo\n'
     return
   fi
   if ! trellis_has_project "${project_dir}"; then
@@ -982,6 +1245,7 @@ syncall_menu_note() {
 dashboard_actions() {
   local project_dir="$1"
   local cc_level="neutral" cc_active="off"
+  local list_level="neutral" list_active="off"
   local integ_level="neutral" integ_active="off"
   local sync_note="" sync_level=""
   local trellis_note="" trellis_level=""
@@ -991,6 +1255,10 @@ dashboard_actions() {
   if [[ -f "${project_dir}/CC-Cowork-Workflow.md" ]]; then
     cc_level="ok"
     cc_active="on"
+  fi
+  if [[ -f "${project_dir}/Test/templates-test-checklist.html" ]]; then
+    list_level="ok"
+    list_active="on"
   fi
   if has_block "${project_dir}/AGENTS.md" "INTEGRATION" "trellis"; then
     integ_level="ok"
@@ -1011,10 +1279,12 @@ dashboard_actions() {
     prompt_opt sync "Sync template files" "templates" "${sync_level}" "${sync_note}"
     printf '\n'
   fi
-  prompt_opt trellis "Trellis management" "platforms, update, upgrade" \
+  prompt_opt trellis "Trellis management" "platforms, update, pause, uninstall" \
     "${trellis_level}" "${trellis_note}"; printf '\n'
   prompt_opt ccflow "Toggle CC-Workflow" "CC-Cowork-Workflow.md" \
     "${cc_level}" "${cc_active}"; printf '\n'
+  prompt_opt checklist "Toggle test checklist" "Test/templates-test-checklist.html" \
+    "${list_level}" "${list_active}"; printf '\n'
   prompt_opt integ "Toggle Trellis block" "in AGENTS.md" \
     "${integ_level}" "${integ_active}"; printf '\n'
   if ! sync_has_work; then
@@ -1075,6 +1345,9 @@ orchestrator_dashboard() {
         ;;
       ccflow)
         toggle_cc_workflow "${project_dir}"
+        ;;
+      checklist)
+        toggle_test_checklist "${project_dir}"
         ;;
       integ)
         toggle_trellis_integration "${project_dir}"

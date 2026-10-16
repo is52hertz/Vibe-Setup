@@ -223,6 +223,67 @@ has "a trellis set gets the trellis variant" "$(cat "${WORK}/set-trellis/CC-Cowo
 materialize_template_set "${WORK}/set-base-cc" "tool" "" 1
 hasnt "a plain set gets the plain variant" "$(cat "${WORK}/set-base-cc/CC-Cowork-Workflow.md")" "trellis-check"
 
+# The document delegates through the subagent, so the feature has to be one
+# thing: a project that got the doc without the agent reads instructions for a
+# tool it does not have.
+if [[ -f "${WORK}/set-base-cc/.claude/agents/codex-run.md" \
+   && -f "${WORK}/set-trellis/.claude/agents/codex-run.md" ]]; then
+  ok "cc-workflow on ships the delegation subagent too"
+else
+  ko "cc-workflow on ships the delegation subagent too" "no .claude/agents/codex-run.md in the set"
+fi
+if [[ -f "${WORK}/set-plain/.claude/agents/codex-run.md" ]]; then
+  ko "cc-workflow off keeps the subagent out" "the file is there"
+else
+  ok "cc-workflow off keeps the subagent out"
+fi
+# The name in the frontmatter is what the Agent tool is called with; the
+# document names `codex-run`, and a rename on one side alone breaks the flow.
+has "the subagent answers to the name the doc uses" \
+  "$(cat "${WORK}/set-base-cc/.claude/agents/codex-run.md")" "name: codex-run"
+has "the doc points at the agent file it ships" \
+  "$(cat "${WORK}/set-base-cc/CC-Cowork-Workflow.md")" ".claude/agents/codex-run.md"
+# The courier's two load-bearing defaults. Losing either is how the old flow
+# went wrong: a rewritten prompt, or a write-capable run nobody asked for.
+has "the subagent forbids touching the prompt" \
+  "$(cat "${WORK}/set-base-cc/.claude/agents/codex-run.md")" "by path, never by value"
+has "the subagent defaults to read-only" \
+  "$(cat "${WORK}/set-base-cc/.claude/agents/codex-run.md")" "no\` (read-only)"
+# The waiter is what makes a long job cost the same as a short one. Lose it and
+# the agent falls back to chunked waiting bounded by the foreground time limit,
+# which is the design this replaced.
+has "the subagent waits by arming a detached waiter" \
+  "$(cat "${WORK}/set-base-cc/.claude/agents/codex-run.md")" "run_in_background"
+has "and is told never to poll" \
+  "$(cat "${WORK}/set-base-cc/.claude/agents/codex-run.md")" "Never poll"
+
+# The manual test checklist is a feature, not part of common/ — a project that
+# never opens one should not carry it. common/ is copied whole, so the only way
+# to make it optional was to move it out of there.
+materialize_template_set "${WORK}/set-list-on" "tool" "" 0 1
+if [[ -f "${WORK}/set-list-on/Test/templates-test-checklist.html" ]]; then
+  ok "the checklist is in the set when asked for"
+else
+  ko "the checklist is in the set when asked for" "no Test/templates-test-checklist.html"
+fi
+if [[ -f "${WORK}/set-plain/Test/templates-test-checklist.html" ]]; then
+  ko "and stays out of it when not" "the file is there"
+else
+  ok "and stays out of it when not"
+fi
+has "the checklist that ships is the real page" \
+  "$(head -3 "${WORK}/set-list-on/Test/templates-test-checklist.html")" "<!DOCTYPE html>"
+
+# The variants are kept line-for-line so a change to one is visibly a change to
+# the other; equal length is the cheap proof that no edit landed in only one.
+base_lines="$(wc -l < "${TEMPLATE_ROOT}/blocks/features/cc-workflow/base.md" | tr -d ' ')"
+trellis_lines="$(wc -l < "${TEMPLATE_ROOT}/blocks/features/cc-workflow/trellis.md" | tr -d ' ')"
+is "both workflow variants stay the same length" "${base_lines}" "${trellis_lines}"
+# The repo keeps its own copy of the workflow document at the root, for this
+# project's agents. Nothing syncs it, so the test is what keeps it honest.
+files_match "the repo's own copy matches the template" \
+  "${REPO_ROOT}/CC-Cowork-Workflow.md" "${TEMPLATE_ROOT}/blocks/features/cc-workflow/base.md"
+
 # --- the renderer ---------------------------------------------------------
 # Nothing may put a newline inside a status row: one there breaks the layout,
 # and `git rev-parse` on a repository with no commits returns exactly that.
@@ -610,6 +671,7 @@ trellis_note_for() {
     . "'"${REPO_ROOT}"'/lib/ui.sh"
     . "'"${REPO_ROOT}"'/lib/prompt.sh"
     . "'"${REPO_ROOT}"'/lib/block_engine.sh"
+    . "'"${REPO_ROOT}"'/lib/state.sh"
     . "'"${REPO_ROOT}"'/lib/trellis.sh"
     . "'"${REPO_ROOT}"'/lib/apply.sh"
     trellis_menu_note "'"$1"'"
@@ -637,11 +699,11 @@ mkdir -p "${MENUPROJ}"
 
 SYNC_N_NEW=0 SYNC_N_UPDATE=0 SYNC_N_REVIEW=0 SYNC_N_LEGACY=0
 is "with nothing to sync, sync drops below the toggles" \
-  "$(menu_order "${MENUPROJ}")" "trellis ccflow integ sync syncall quit "
+  "$(menu_order "${MENUPROJ}")" "trellis ccflow checklist integ sync syncall quit "
 
 SYNC_N_REVIEW=2
 is "with work to do, sync leads the menu" \
-  "$(menu_order "${MENUPROJ}")" "sync trellis ccflow integ syncall quit "
+  "$(menu_order "${MENUPROJ}")" "sync trellis ccflow checklist integ syncall quit "
 SYNC_N_REVIEW=0
 
 # Each toggle reports the state the project is actually in.
@@ -657,6 +719,18 @@ is "and takes the ok level"                  "${PROMPT_HINT_LEVEL}" "ok"
 _prompt_split "$(dashboard_actions "${MENUPROJ}" "" "" | grep -F 'integ')"
 is "the Trellis block reports itself present" "${PROMPT_ACTIVE}"    "on"
 is "while its hint stays put"                 "${PROMPT_HINT}"      "in AGENTS.md"
+# The checklist is a file with no block anywhere, so presence is the whole
+# state — and absent must read as a choice (neutral), never as something due.
+_prompt_split "$(dashboard_actions "${MENUPROJ}" "" "" | grep -F 'checklist')"
+is "an absent checklist reads off"            "${PROMPT_ACTIVE}"     "off"
+is "and reads neutral, not dim"               "${PROMPT_HINT_LEVEL}" "neutral"
+is "while its hint names the file"            "${PROMPT_HINT}"       "Test/templates-test-checklist.html"
+mkdir -p "${MENUPROJ}/Test"
+printf 'checklist\n' > "${MENUPROJ}/Test/templates-test-checklist.html"
+_prompt_split "$(dashboard_actions "${MENUPROJ}" "" "" | grep -F 'checklist')"
+is "a present checklist reads on"             "${PROMPT_ACTIVE}"     "on"
+is "and takes the ok level"                   "${PROMPT_HINT_LEVEL}" "ok"
+rm -rf "${MENUPROJ}/Test"
 PATH="${PATH_BEFORE_FAKE}"
 
 # --- every ui_* the tool calls has to exist ---------------------------------
@@ -772,6 +846,49 @@ is "re-recording a block replaces it"    "$(state_block_hash "${PROJ}" "AGENTS.m
 is "an untouched block keeps its base"   "$(state_block_hash "${PROJ}" "AGENTS.md" "PROFILE" "tool")" "hash-tool-1"
 is "an untouched file keeps its base"    "$(state_file_hash  "${PROJ}" "AGENTS.md")" "hash-file-1"
 
+# A run can stage no records at all and still flush: record_trellis_state sets
+# one header field and writes. The merge awk keyed on NR == FNR, which with an
+# empty staging file matched every line of the manifest instead — so pausing
+# Trellis silently dropped every hash and took the merge base with it, leaving
+# the next sync to call every file a conflict.
+STATE_RECORDS=()
+STATE_SET_TRELLIS="paused"
+state_flush "${PROJ}"
+STATE_SET_TRELLIS=""
+is "a flush with nothing staged keeps file hashes"  "$(state_file_hash  "${PROJ}" "AGENTS.md")" "hash-file-1"
+is "and keeps block hashes"                         "$(state_block_hash "${PROJ}" "AGENTS.md" "PROFILE" "tool")" "hash-tool-1"
+is "and still writes the header it came for"        "$(state_get "${PROJ}" trellis)" "paused"
+
+# Disabling a feature twice must not destroy what the first disable saved —
+# that archive is the only copy of the user's own edits.
+ARCH="${WORK}/arch"
+mkdir -p "${ARCH}"
+printf 'first\n' > "${ARCH}/codex-run.md"
+arch1="$(archive_disabled "${ARCH}/codex-run.md")"
+printf 'second\n' > "${ARCH}/codex-run.md"
+arch2="$(archive_disabled "${ARCH}/codex-run.md")"
+is "the first archive takes the plain name" "$(basename -- "${arch1}")" "codex-run.md.disabled"
+is "a second archive steps aside"           "$(basename -- "${arch2}")" "codex-run.md.disabled.2"
+is "so the first archive survives"          "$(cat "${ARCH}/codex-run.md.disabled")" "first"
+
+# Enabling CC-Workflow must not overwrite a codex-run.md the user already
+# carries. Theirs wins and the tool's copy lands beside it, the same contract
+# every other managed file gets.
+CCP="${WORK}/ccproj"
+mkdir -p "${CCP}/.claude/agents"
+printf 'mine\n' > "${CCP}/.claude/agents/codex-run.md"
+(
+  ask_yes_no() { true; }
+  ensure_dir() { mkdir -p "$1"; }
+  toggle_cc_workflow "${CCP}"
+) >/dev/null 2>&1
+is "enabling keeps the user's own subagent" "$(cat "${CCP}/.claude/agents/codex-run.md")" "mine"
+if [[ -f "${CCP}/.claude/agents/codex-run.md.template" ]]; then
+  ok "and leaves the tool's copy as .template"
+else
+  ko "and leaves the tool's copy as .template" "no .template beside it"
+fi
+
 is "an untracked project reports no version" "$(state_get "${WORK}" version)" ""
 if state_is_tracked "${WORK}"; then ko "a project with no manifest is untracked" "reported tracked"; else ok "a project with no manifest is untracked"; fi
 
@@ -792,6 +909,274 @@ NOGIT="${WORK}/nogit"
 mkdir -p "${NOGIT}"
 ensure_state_gitignored "${NOGIT}"
 if [[ -e "${NOGIT}/.gitignore" ]]; then ko "a non-repo gets no .gitignore" "created one"; else ok "a non-repo gets no .gitignore"; fi
+
+# --- a run with nothing to record still writes the manifest -----------------
+# An old project whose every file needs review or a format conversion stages no
+# record at all, and state_flush used to return before writing anything — so
+# the project that most needs a merge base never got a .vibe-init/.
+EMPTYPROJ="${WORK}/emptyproj"
+mkdir -p "${EMPTYPROJ}"
+STATE_RECORDS=()
+state_flush "${EMPTYPROJ}"
+if [[ -f "${EMPTYPROJ}/.vibe-init/manifest" ]]; then
+  ok "a flush with no records still writes the manifest"
+else
+  ko "a flush with no records still writes the manifest" "no manifest"
+fi
+
+# A run can stage one key twice: the base a finished merge promotes, then what
+# the sync itself found. Two lines would leave the lookup to sort order.
+STATE_RECORDS=()
+state_record_block "AGENTS.md" "CORE_RULES" "" "hash-second"
+state_record_block "AGENTS.md" "CORE_RULES" "" "hash-first"
+state_flush "${EMPTYPROJ}"
+is "a key staged twice keeps the later record" \
+  "$(state_block_hash "${EMPTYPROJ}" "AGENTS.md" "CORE_RULES" "")" "hash-first"
+is "and writes it once" \
+  "$(grep -c "^block	AGENTS.md	CORE_RULES" "${EMPTYPROJ}/.vibe-init/manifest")" "1"
+
+STATE_SET_TRELLIS="paused"
+state_flush "${EMPTYPROJ}"
+STATE_SET_TRELLIS=""
+state_flush "${EMPTYPROJ}"
+is "the Trellis state survives a flush that does not set it" \
+  "$(state_get "${EMPTYPROJ}" trellis)" "paused"
+
+# --- a merge finished outside the tool becomes the merge base ---------------
+# The agent merges; the only signal that comes back is it deleting the
+# .template. Without acting on that, a block the user kept their own way had no
+# base and read "review" on every run, forever.
+MB_SET="${WORK}/mb-set"
+materialize_template_set "${MB_SET}" "ask" "" 0
+TEMPLATE_DIR="${MB_SET}"
+TEMPLATE_FILES=("AGENTS.md" ".claude/settings.json")
+TEMPLATE_SET_LABEL="test"
+MBPROJ="${WORK}/mbproj"
+mkdir -p "${MBPROJ}/.claude"
+awk '/^<\/CORE_RULES>/ { print "- a rule of my own" } { print }' \
+  "${MB_SET}/AGENTS.md" > "${MBPROJ}/AGENTS.md"
+cp "${MB_SET}/.claude/settings.json" "${MBPROJ}/.claude/settings.json"
+STATE_RECORDS=()
+
+sync_run "${MBPROJ}" plan "${TEMPLATE_FILES[@]}"
+is "with no base, an edited block needs review" "${SYNC_N_REVIEW}" "1"
+
+sync_run "${MBPROJ}" apply "AGENTS.md" 2>/dev/null
+if [[ -f "$(state_pending_path "${MBPROJ}" "AGENTS.md")" ]]; then
+  ok "handing out a .template keeps the template it was"
+else
+  ko "handing out a .template keeps the template it was" "nothing under pending/"
+fi
+sync_run "${MBPROJ}" plan "${TEMPLATE_FILES[@]}"
+is "while the .template is there the merge is still open" "${SYNC_N_REVIEW}" "1"
+
+rm -f "${MBPROJ}/AGENTS.md.template"
+sync_run "${MBPROJ}" plan "${TEMPLATE_FILES[@]}"
+is "once the agent deletes it, the plan reads the merge as done" "${SYNC_N_REVIEW}" "0"
+
+# Nothing is selectable now, so this is the path that used to record nothing.
+ASSUME_DEFAULTS=1
+apply_templates "${MBPROJ}" 2>/dev/null
+ASSUME_DEFAULTS=0
+is "the finished merge's template becomes the recorded base" \
+  "$(state_block_hash "${MBPROJ}" "AGENTS.md" "CORE_RULES" "")" \
+  "$(hash_block "${MB_SET}/AGENTS.md" "CORE_RULES")"
+if [[ -e "$(state_pending_path "${MBPROJ}" "AGENTS.md")" ]]; then
+  ko "and the kept copy is forgotten" "still under pending/"
+else
+  ok "and the kept copy is forgotten"
+fi
+is "a file identical to the template is adopted though never offered" \
+  "$(state_file_hash "${MBPROJ}" ".claude/settings.json")" \
+  "$(hash_file "${MB_SET}/.claude/settings.json")"
+sync_run "${MBPROJ}" plan "${TEMPLATE_FILES[@]}"
+is "later runs stay quiet" "${SYNC_N_REVIEW}" "0"
+
+awk '/^<\/CORE_RULES>/ { print "- a new upstream rule" } { print }' \
+  "${MB_SET}/AGENTS.md" > "${WORK}/mb-moved" && mv "${WORK}/mb-moved" "${MB_SET}/AGENTS.md"
+sync_run "${MBPROJ}" plan "${TEMPLATE_FILES[@]}"
+is "when the template moves again, both sides moved" "${SYNC_N_REVIEW}" "1"
+
+# An old project: its AGENTS.md needs a format conversion and its settings file
+# already matches. The sync that selects AGENTS.md must still adopt the other.
+materialize_template_set "${MB_SET}" "ask" "" 0
+OLDPROJ="${WORK}/oldproj"
+mkdir -p "${OLDPROJ}/.claude"
+printf '# AGENTS\n\n## Rules\nold rules\n' > "${OLDPROJ}/AGENTS.md"
+cp "${MB_SET}/.claude/settings.json" "${OLDPROJ}/.claude/settings.json"
+STATE_RECORDS=()
+ASSUME_DEFAULTS=1
+apply_templates "${OLDPROJ}" 2>/dev/null
+ASSUME_DEFAULTS=0
+if [[ -f "${OLDPROJ}/.vibe-init/manifest" ]]; then
+  ok "an old project gets a manifest on its first sync"
+else
+  ko "an old project gets a manifest on its first sync" "no manifest"
+fi
+is "the matching file beside a selected one is adopted" \
+  "$(state_file_hash "${OLDPROJ}" ".claude/settings.json")" \
+  "$(hash_file "${MB_SET}/.claude/settings.json")"
+if [[ -f "${OLDPROJ}/AGENTS.md.template" && ! -e "$(state_pending_path "${OLDPROJ}" "AGENTS.md")" ]]; then
+  ok "a format conversion keeps no template: its merge is the next round"
+else
+  ko "a format conversion keeps no template: its merge is the next round" "pending copy written"
+fi
+
+# --- pausing, restoring and uninstalling Trellis ----------------------------
+# Mid-project, .trellis/ holds tasks, specs, journals and memory. Pausing is
+# Trellis's own reversible `ablate`; uninstalling deletes the lot, so it asks
+# first when git could not give the work back. None of them pass --yes.
+TR_BIN="${WORK}/trbin"
+mkdir -p "${TR_BIN}"
+cat > "${TR_BIN}/trellis" <<'FAKE'
+#!/usr/bin/env bash
+# TR_DECLINE=1 stands for the user saying no at Trellis's own prompt.
+[[ "$1" == "--version" ]] && { echo "0.6.16"; exit 0; }
+echo "RAN trellis $*"
+[[ "${TR_DECLINE:-0}" == 1 ]] && exit 1
+case "$1" in
+  ablate)    mv .trellis .trellis-ablated ;;
+  restore)   mv .trellis-ablated .trellis ;;
+  uninstall) rm -rf .trellis ;;
+esac
+FAKE
+chmod +x "${TR_BIN}/trellis"
+
+# trellis_ops <project_dir> <yes|no> <menu choice, or "" for the default> <code>
+# Runs <code> with the libraries loaded and the fake CLI on PATH. Every
+# confirmation answers <yes|no>; the first menu answers the choice and any later
+# one "back", so a loop cannot spin.
+trellis_ops() {
+  rm -f "${WORK}/tr-selected"
+  TR_PROJ="$1" TR_ANSWER="$2" TR_SELECT="$3" TR_WORK="${WORK}" TR_REPO="${REPO_ROOT}" \
+    TR_DECLINE="${TR_DECLINE:-0}" PATH="${TR_BIN}:${PATH}" bash -c '
+    set -uo pipefail
+    SCRIPT_DIR="${TR_WORK}"
+    TEMPLATE_ROOT="${TR_REPO}/templates"
+    DRY_RUN=0; ASSUME_DEFAULTS=0; VIBE_INIT_VERSION="test"
+    CC_WORKFLOW_ENABLED=0; TEMPLATE_INTEGRATIONS="trellis"
+    info() { printf "[test] %s\n" "$*" >&2; }
+    warn() { printf "[test] warning: %s\n" "$*" >&2; }
+    for lib in ui prompt block_engine state sync trellis apply; do
+      . "${TR_REPO}/lib/${lib}.sh"
+    done
+    run_in_dir() { local d="$1"; shift; (cd "${d}" && "$@"); }
+    prepare_template_set() { :; }
+    resolve_trellis_setup() { printf "INIT\n" >&2; TRELLIS_READY=0; }
+    ask_yes_no() { printf "ASKED %s\n" "$1" >&2; [[ "${TR_ANSWER}" == yes ]]; }
+    ui_select() {
+      if [[ -e "${TR_WORK}/tr-selected" ]]; then printf "back\n"; return; fi
+      : > "${TR_WORK}/tr-selected"
+      printf "%s\n" "${TR_SELECT:-$2}"
+    }
+    eval "$1"
+  ' _ "$4" 2>&1
+}
+trellis_ran() { printf '%s\n' "$1" | grep '^RAN trellis' || true; }
+
+# A project mid-work: a task, and the integration block in AGENTS.md.
+TRP="${WORK}/trpause"
+mkdir -p "${TRP}/.trellis/tasks/t1"
+printf 'decisions\n' > "${TRP}/.trellis/tasks/t1/prd.md"
+{ printf '<CORE_RULES>\nrules\n</CORE_RULES>\n\n'; cat "${TEMPLATE_ROOT}/blocks/integrations/trellis.md"; } \
+  > "${TRP}/AGENTS.md"
+
+TR_DECLINE=1
+out="$(trellis_ops "${TRP}" yes pause 'manage_trellis "${TR_PROJ}"')"
+TR_DECLINE=0
+if [[ -d "${TRP}/.trellis" ]] && [[ "$(state_get "${TRP}" trellis)" != "paused" ]]; then
+  ok "declining at Trellis's prompt records no pause"
+else
+  ko "declining at Trellis's prompt records no pause" "recorded or moved"
+fi
+hasnt "and asks nothing about the block" "${out}" "ASKED Remove the Trellis integration block"
+
+out="$(trellis_ops "${TRP}" yes pause 'manage_trellis "${TR_PROJ}"')"
+is    "pause runs trellis ablate, leaving the confirmation to Trellis" "$(trellis_ran "${out}")" "RAN trellis ablate"
+is    "and records the project as paused" "$(state_get "${TRP}" trellis)" "paused"
+if has_block "${TRP}/AGENTS.md" "INTEGRATION" "trellis"; then
+  ko "the integration block goes when the user agrees" "still there"
+else
+  ok "the integration block goes when the user agrees"
+fi
+
+has "a paused project reads paused in the menu" \
+  "$(trellis_ops "${TRP}" no "" 'trellis_menu_note "${TR_PROJ}"')" "paused"
+has "and on the diagnostics card" \
+  "$(trellis_ops "${TRP}" no "" 'show_project_diagnostics "${TR_PROJ}"')" "Paused"
+
+out="$(trellis_ops "${TRP}" yes "" 'manage_trellis "${TR_PROJ}"')"
+is "a paused project's Trellis menu leads with restore" "$(trellis_ran "${out}")" "RAN trellis restore"
+if [[ -f "${TRP}/.trellis/tasks/t1/prd.md" ]]; then ok "restore brings the work back"; else ko "restore brings the work back" "no prd.md"; fi
+is "and records the project as active" "$(state_get "${TRP}" trellis)" "active"
+if has_block "${TRP}/AGENTS.md" "INTEGRATION" "trellis"; then
+  ok "and offers the integration block back"
+else
+  ko "and offers the integration block back" "block not re-added"
+fi
+
+NEVER="${WORK}/trnever"
+mkdir -p "${NEVER}"
+# Once the sync has nothing left, this submenu is the dashboard's default row,
+# so its own default must not be an init: Enter three times wrote a Trellis tree.
+hasnt "a project that never had Trellis does not default to init" \
+  "$(trellis_ops "${NEVER}" no "" 'manage_trellis "${TR_PROJ}"')" "INIT"
+has "but init is still one choice away" \
+  "$(trellis_ops "${NEVER}" no init 'manage_trellis "${TR_PROJ}"')" "INIT"
+
+# Uninstall: uncommitted work outside git asks first, and no means nothing runs.
+if trellis_has_unprotected_data "${TRP}"; then
+  ok "work outside a git repository is unprotected"
+else
+  ko "work outside a git repository is unprotected" "reported protected"
+fi
+out="$(trellis_ops "${TRP}" no uninstall 'manage_trellis "${TR_PROJ}"')"
+has   "uninstalling unprotected work asks first" "${out}" "ASKED Uninstall and delete them anyway?"
+is    "and declining runs nothing" "$(trellis_ran "${out}")" ""
+if [[ -d "${TRP}/.trellis" ]]; then ok "and deletes nothing"; else ko "and deletes nothing" ".trellis is gone"; fi
+
+out="$(trellis_ops "${TRP}" yes uninstall 'manage_trellis "${TR_PROJ}"')"
+is "agreeing runs trellis uninstall without --yes" "$(trellis_ran "${out}")" "RAN trellis uninstall"
+is "and records Trellis as gone" "$(state_get "${TRP}" trellis)" "none"
+
+GITTR="${WORK}/trgit"
+mkdir -p "${GITTR}/.trellis/tasks/t1"
+printf 'decisions\n' > "${GITTR}/.trellis/tasks/t1/prd.md"
+git -C "${GITTR}" init -q
+git -C "${GITTR}" add -A
+git -C "${GITTR}" -c user.name=t -c user.email=t@example.com commit -qm init
+if trellis_has_unprotected_data "${GITTR}"; then
+  ko "committed work is protected" "reported unprotected"
+else
+  ok "committed work is protected"
+fi
+hasnt "so uninstalling it does not ask" \
+  "$(trellis_ops "${GITTR}" no uninstall 'trellis_uninstall_project "${TR_PROJ}"')" "ASKED"
+git -C "${GITTR}" checkout -q -- .trellis
+mkdir -p "${GITTR}/.trellis/workspace"
+printf 'journal\n' > "${GITTR}/.trellis/workspace/journal.md"
+printf '.trellis/workspace/\n' > "${GITTR}/.gitignore"
+if trellis_has_unprotected_data "${GITTR}"; then
+  ok "ignored work under .trellis/ is unprotected"
+else
+  ko "ignored work under .trellis/ is unprotected" "reported protected"
+fi
+
+# What still points at Trellis once it has gone.
+CCTR="${WORK}/trcc"
+mkdir -p "${CCTR}"
+cp "${TEMPLATE_ROOT}/blocks/features/cc-workflow/trellis.md" "${CCTR}/CC-Cowork-Workflow.md"
+has "a Trellis-variant workflow document is named" \
+  "$(trellis_ops "${CCTR}" no "" 'after_trellis_left "${TR_PROJ}"')" "still describes the Trellis co-work loop"
+cp "${TEMPLATE_ROOT}/blocks/features/cc-workflow/base.md" "${CCTR}/CC-Cowork-Workflow.md"
+hasnt "the plain variant is not" \
+  "$(trellis_ops "${CCTR}" no "" 'after_trellis_left "${TR_PROJ}"')" "co-work loop"
+
+# Removing the block alone leaves Trellis set up; the toggle says so.
+mkdir -p "${TRP}/.trellis"
+cat "${TEMPLATE_ROOT}/blocks/integrations/trellis.md" >> "${TRP}/AGENTS.md"
+has "the block toggle says Trellis itself stays" \
+  "$(trellis_ops "${TRP}" no "" 'toggle_trellis_integration "${TR_PROJ}"')" "Trellis itself stays set up"
 
 echo
 if [[ "${FAIL}" -eq 0 ]]; then

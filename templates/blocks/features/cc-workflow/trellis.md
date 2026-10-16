@@ -2,15 +2,15 @@
 
 **Scope:** Claude Code only. Depends on the `/codex:*` plugin, which other agents (Cursor, standalone CLIs, …) do not have. Kept out of `AGENTS.md` / `.trellis/` on purpose — those are tool-neutral. `CLAUDE.md` only points here and says *when* to load this file; the rules live here so they don't sit in every-session context.
 
-An **external executor** is a delegated coding/review backend (currently **Codex**). The rules below are written executor-neutral, so another backend could be slotted in later by swapping the companion path and command prefix.
+An **external executor** is a delegated coding/review backend (currently **Codex**). The rules below are written executor-neutral, so another backend could be slotted in later by swapping the subagent's runtime resolution and command prefix.
 
 ## Executors
 
-| Executor | Plugin | Companion runtime (`<companion>`) | Auth | Cmd prefix |
-| --- | --- | --- | --- | --- |
-| **Codex** (GPT-5) | `codex-plugin-cc` (official) | `.../plugins/cache/openai-codex/codex/<ver>/scripts/codex-companion.mjs` | ChatGPT subscription | `/codex:*` |
+| Executor | Plugin | How Claude reaches it | Cmd prefix |
+| --- | --- | --- | --- |
+| **Codex** | `codex-plugin-cc` (official) | the `codex-run` subagent → `scripts/codex-companion.mjs` | `/codex:*` |
 
-> The companion path contains a version segment (`<ver>`); if it has changed, the path printed by `/codex:setup` is authoritative.
+> Neither the plugin version nor the companion path is written down anywhere: `codex-run` resolves the live install at call time from `$CLAUDE_PLUGIN_DATA`, skipping orphaned versions. Model and effort are not pinned here either — unset means Codex's own configured default, which is the right answer on a machine you did not configure. Pin them per call, only when a specific run needs it.
 
 ## Roles
 
@@ -24,34 +24,30 @@ An **external executor** is a delegated coding/review backend (currently **Codex
 2. `trellis-brainstorm` → write `prd.md`.
 3. **After the PRD is written, summarize it in Chinese for the user** so they know exactly what is planned, then get explicit approval. This Chinese PRD summary is the user's approval gate — **do not run `task.py start` until the user approves it.**
 4. `task.py start <task-dir>` — enter `in_progress`.
-5. Delegate one defined unit to an executor via its **companion background-job runtime, driven from the main session (plain Bash) — NOT the synchronous `*:rescue` Agent subagent.** (The subagent wrapper blocks for the entire run, then makes one heavy uncached Anthropic call to summarize; if that final call hits a 529/overload the whole report is lost even though the executor already finished and stored the result. Observed: a 1m34s Codex job reported as a 348s `529 Overloaded` Agent failure. Running the companion directly from main-session Bash has no second Anthropic call, so it is immune.) Use the job interface:
-   - Start (non-blocking): `node <companion> task --background [--write] [--model gpt-5.5] [--effort xhigh] [--prompt-file <file>] "<prompt>"` → returns a job-id immediately. Use `--prompt-file` for long structured prompts (write it into the task dir first); `--model gpt-5.5 --effort xhigh` is the strong setting for reviews.
-   - Poll + auto-fallback (see the section below) — do NOT hand-poll turn by turn.
-   - Fetch: `node <companion> result <job-id> --json` when done → the review text is at `storedJob.result.rawOutput`.
-   - The delegation prompt **must carry the relevant `.trellis/spec/**` context inline** — executor sub-agents cannot inherit the parent session's task context, so unfed context is lost.
-   - **On any error or apparent failure, run `node <companion> status --all` FIRST, before any retry** — the job and its result are almost certainly already stored. A rescue error ≠ work not done; never blindly re-delegate (that risks double-applying).
+5. Delegate one defined unit to the executor through the **`codex-run` subagent** — see the next section. Never inline a prompt into a Bash call, and never hand the work to `codex:codex-rescue`.
 6. Claude reviews the returned diff **and** runs `trellis-check` (deterministic gate: lint / type / test / spec Verification). Fail → return to step 5 (executor re-work) or fix directly; pass → step 7.
 7. `trellis:finish-work` — archive.
 
-## Auto-injection: background job + auto-fallback poller (proven)
+## Delegating one unit — the only supported path
 
-The "fire a Codex job and have its result surface back to you automatically" loop — used both per implementation unit and for whole-PRD / whole-feature reviews:
+`.claude/agents/codex-run.md` ships with this file. It is a courier: it launches one background Codex job, arms a detached waiter that exits the instant the job reaches a terminal state, and then stops. Nothing polls — the waiter's exit is the event that wakes the subagent back up to write the result to disk and hand you the path. It never rewrites your prompt and never summarizes Codex's output. Claude Code reads agent definitions when a session starts, so a project that just had CC-Workflow switched on needs one restart before `codex-run` can be called at all.
 
-1. **Launch** from main-session Bash (non-blocking): `node <companion> task --background --model gpt-5.5 --effort xhigh --prompt-file <task-dir>/codex-...-prompt.md` → prints a job-id.
-2. **Auto-fallback poller** — a single `run_in_background: true` Bash loop, so the harness re-invokes you the moment it exits. It polls `node <companion> status <job> --json`, and **on completion fetches the result, writes it to `<task-dir>/codex-...-result.txt`, then exits** → job-exit = harness notification = you read the file. No turn-by-turn babysitting.
-   - **Gotcha (cost a real bug):** the status field is **`job.status`, NESTED under `job`** — not top-level `status`. Parsing top-level made the poller spin forever and the completion never surfaced ("looks like it never finished"). Parse `d['job']['status']`.
-   - Persist every `codex-*-result.txt` (and the `*-prompt.md`, the captured `*.diff`) in the task dir — provenance + crash-safe resume.
+1. **Write the prompt to a file** — `<task-dir>/codex-<unit>-prompt.md`. It **must carry the relevant `.trellis/spec/**` context inline** (plus any project conventions and the exact files in scope): an executor cannot inherit this session's task context, so unfed context is simply lost.
+2. **Spawn `codex-run`** with a task text of plain `field: value` lines — `prompt-file:` and `result-dir:` are absolute paths and required; `write:` defaults to `no`; `model:` and `effort:` are omitted unless this run genuinely needs to pin them.
+3. **Expect two hand-backs, and read the result file yourself.** The first says `launched, waiting` and is not the result — note the job id and get on with something else. The second arrives when the job is genuinely done; only then is `<result-dir>/codex-<job-id>.result.md` there to read, with the full record (`touchedFiles`, thread id, failure text) beside it in `codex-<job-id>.result.json`. The subagent hands you paths, never a verdict.
+4. **`write: yes` only when the unit really is "Codex edits the repo."** Reviews, diagnosis and research stay read-only; that is the default and it should stay the common case.
 
-### Recovery when the result seems "gone"
-- Codex jobs run on the Codex side and survive Claude quota/session limits — but the **companion job store is wiped on session restart / quota reset**, so `status --all` may show *no jobs*. The full Codex turn is still on disk at `~/.codex/sessions/<YYYY>/<MM>/<DD>/rollout-*.jsonl`. Find the right one by grepping a UNIQUE phrase from your prompt; extract the answer from `payload.role == "assistant"` events (concatenate their `content[].text`).
-- A job **killed mid-run** (session exited while it was working) leaves only intermediate narration, never a final structured verdict — **re-launch a fresh review** rather than trusting the partial.
+Three properties make this safe to repeat, and all three are worth protecting when editing this file: the prompt travels **by path, never by value**, so nothing can quietly reword it; the result is **on disk before the subagent speaks**, so a lost or failed reply never costs you a finished job; and **nothing polls**, so a unit that takes four minutes and one that takes four hours cost the same number of turns and neither needs a timeout guessed in advance.
 
-## Two proven review flows (Claude authors → Codex reviews; author ≠ reviewer)
+## Why not the plugin's own `codex:codex-rescue`
 
-Both apply to any non-trivial feature:
+It is a deliberate one-shot forwarder, and its own definition forbids what orchestration needs: it may call `task` exactly once and is **barred from `status`, `result` and `cancel`**, so it cannot bring a background job's output back. It also **defaults to `--write`**, turns words like "continue" or "dig deeper" into `--resume-last` (silently chaining onto an unrelated earlier thread), is allowed to **rewrite your prompt** before forwarding, and **returns nothing at all** when the Bash call fails — not even a job id to recover from. Fine for a human typing `/codex:rescue` once; wrong for every step of a plan.
 
-- **PRD review (planning phase, before any code):** Claude writes `prd.md`, then hands the PRD + a discussion summary to Codex (`gpt-5.5 xhigh`) for a security / architecture / feasibility pass. Iterate the PRD across rounds until **0 blockers**, *then* `task.py start`. Author≠reviewer applies to the design, not just the code.
-- **Per-unit code review + 精修:** split the build into small units/PRs; each unit = `trellis-implement` (Claude/Opus authors) → `trellis-check` (deterministic gate) → **Codex adversarial review of that unit's diff** → Claude triages findings (real blocker vs deferred-by-plan) and fixes (精修), then **independently re-reads the critical diff** (never trust the sub-agent's "done" blindly). Run **one whole-feature final review** (security + PRD-compliance + acceptance-criteria checklist) before the final commit.
+## When a job seems lost
+
+- **A job still running when the Claude session ends is dead.** The plugin's `SessionEnd` hook kills this session's `queued`/`running` jobs and drops them from the job index. Relaunch the unit; never trust a partial.
+- **A job that finished keeps its record on disk**, even after the index is cleaned: `$CLAUDE_PLUGIN_DATA/state/<project>-<hash>/jobs/<job-id>.json`, with the answer at `.storedJob.result.rawOutput`. Look there before concluding anything was lost — and look at `<result-dir>/codex-<job-id>.result.md` first, which is the same text the subagent already saved for you.
+- **On any error, check state before retrying.** `node <companion> status --all` first: the job is usually already running or done, and a blind re-launch double-applies the work.
 
 ## Non-negotiables
 
