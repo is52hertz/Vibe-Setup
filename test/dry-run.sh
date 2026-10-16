@@ -538,6 +538,46 @@ printf 'existing\n' > "${d}/AGENTS.md"
 vi "${d}" --apply -y --dry-run --on-exists template
 has "--on-exists keeps the file-level labels" "already exists -> template"
 
+# --- a project vibe-init never touched, through to a settled sync ------------
+# The whole first-contact loop, for real rather than --dry-run: the first apply
+# creates what is missing and hands out .template pairs for what the user
+# already wrote, the user's agent converts and merges, and from then on every
+# apply has nothing to do.
+d="$(sandbox)"
+vi "${d}" --apply -y
+rc_is "an empty untracked project applies cleanly" 0
+vi "${d}" --apply -y
+has   "and a second apply has nothing to sync" "Everything is up to date"
+
+d="$(sandbox)"
+printf '# My rules\n\nUse tabs.\n' > "${d}/CLAUDE.md"
+mkdir -p "${d}/.claude"
+printf '{"permissions":{"allow":["Bash(ls)"]}}\n' > "${d}/.claude/settings.json"
+cp "${d}/CLAUDE.md" "${d}/claude.orig"
+cp "${d}/.claude/settings.json" "${d}/settings.orig"
+vi "${d}" --apply -y
+rc_is "a project with files of its own applies cleanly" 0
+has   "its legacy CLAUDE.md is handed out for conversion" "CLAUDE.md.template  ->  CLAUDE.md"
+has   "its own settings.json is handed out for merging"  ".claude/settings.json.template  ->  .claude/settings.json"
+if diff -q "${d}/CLAUDE.md" "${d}/claude.orig" >/dev/null \
+  && diff -q "${d}/.claude/settings.json" "${d}/settings.orig" >/dev/null; then
+  ok "the user's own files are not touched"
+else
+  ko "the user's own files are not touched" "CLAUDE.md or settings.json changed"
+fi
+
+# Stand in for the agent: wrap the template's block around the user's text,
+# take the template's settings, and delete the .template files.
+{ sed -n '/^<CLAUDE_BASE>$/,/^<\/CLAUDE_BASE>$/p' "${d}/CLAUDE.md.template"
+  printf '\n'; cat "${d}/claude.orig"; } > "${d}/CLAUDE.md"
+mv "${d}/.claude/settings.json.template" "${d}/.claude/settings.json"
+rm "${d}/CLAUDE.md.template"
+vi "${d}" --apply -y
+has   "after the agent's round the project is settled" "Everything is up to date"
+hasnt "and nothing is handed out again"                ".template"
+vi "${d}" --apply -y
+has   "and it stays settled"                           "Everything is up to date"
+
 echo
 if [[ "${FAIL}" -eq 0 ]]; then
   printf 'PASS — %d assertions, 0 failures\n' "${PASS}"
