@@ -115,7 +115,29 @@ cleanup_template_stage() {
     rm -rf "${TEMPLATE_STAGE_DIR}"
   fi
 }
-trap cleanup_template_stage EXIT
+
+# Shift+L flips the interface language inside a selector, which runs in a
+# subshell; the flip reaches the rest of the run through a file in this private
+# directory (see lib/i18n.sh). Made only when there is a terminal to press the
+# key in, so a scripted run does no extra work. Removed on EXIT only — not by
+# cleanup_template_stage, which also runs mid-run whenever the set is rebuilt.
+UI_RUN_DIR=""
+prepare_ui_run_dir() {
+  [[ -t 0 ]] || return 0
+  UI_RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/vibe-init-ui.XXXXXX" 2>/dev/null)" || {
+    UI_RUN_DIR=""
+    return 0
+  }
+  UI_LANG_FILE="${UI_RUN_DIR}/lang"
+}
+
+cleanup_on_exit() {
+  cleanup_template_stage
+  if [[ -n "${UI_RUN_DIR}" && -d "${UI_RUN_DIR}" ]]; then
+    rm -rf "${UI_RUN_DIR}"
+  fi
+}
+trap cleanup_on_exit EXIT
 
 usage() {
   cat <<EOF
@@ -181,6 +203,9 @@ Behavior:
     the -y / non-TTY behavior); --on-exists sets this for the whole run. Does not
     install or initialize Trellis. Notes (but does not act on) a target that is
     not a git repository.
+  - Shift+L in any interactive menu switches the interface between English and
+    Simplified Chinese for the rest of the run (in a plain numbered menu, type L
+    and Enter). VIBE_INIT_LANG=zh starts in Chinese. Agent prompts stay English.
 EOF
 }
 
@@ -1173,6 +1198,8 @@ main() {
   local normalized_trellis_choice=""
   local install_trellis=0
   local profile=""
+
+  prepare_ui_run_dir
 
   if [[ -n "${APPLY_FILES}" && "${APPLY_MODE}" -eq 0 ]]; then
     die "--files requires --apply"

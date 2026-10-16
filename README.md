@@ -157,6 +157,15 @@ itself:
 | `--dry-run` | Print actions without writing files or running installers. |
 | `-h`, `--help` | Show help. |
 
+### Interface language
+
+Press **Shift+L** in any interactive menu to switch the interface between
+English and Simplified Chinese (in a plain numbered menu, type `L` and Enter).
+The switch lasts for the rest of the run; every run starts in English unless
+`VIBE_INIT_LANG=zh` is set. The prompts printed for your AI agent stay in
+English — they are written for the model, and already ask it to talk to you in
+Chinese.
+
 ## What gets created
 
 | File | Purpose |

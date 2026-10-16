@@ -10,6 +10,10 @@
 
 set -uo pipefail
 
+# The suites assert on the English text; a user who starts vibe-init in
+# Chinese must not turn every assertion red.
+unset VIBE_INIT_LANG
+
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 VI="${REPO_ROOT}/vibe-init.sh"
@@ -577,6 +581,19 @@ has   "after the agent's round the project is settled" "Everything is up to date
 hasnt "and nothing is handed out again"                ".template"
 vi "${d}" --apply -y
 has   "and it stays settled"                           "Everything is up to date"
+
+# --- VIBE_INIT_LANG=zh starts the interface in Chinese ----------------------
+# The interface is translated; the agent prompts are not — they are written for
+# a model, and already ask it to talk to the user in Chinese.
+d="$(sandbox)"
+printf '# My rules\n' > "${d}/CLAUDE.md"
+OUT="$(cd "${d}" && VIBE_INIT_LANG=zh "${VI}" --apply -y </dev/null 2>&1)"
+has   "VIBE_INIT_LANG=zh renders the card in Chinese"  "项目环境"
+has   "and the sync result"                            "同步结果"
+has   "the agent prompt stays English"                 "Restructure my files into the new <TAG> block format."
+hasnt "and no English status leaks into the card"      "Project environment"
+vi "${d}" --apply -y
+has   "without it the run is English"                  "Project environment"
 
 echo
 if [[ "${FAIL}" -eq 0 ]]; then

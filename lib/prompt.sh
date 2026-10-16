@@ -27,6 +27,12 @@
 # ASCII unit separator: not something a label will ever contain.
 PROMPT_US=$'\037'
 
+# Shift+L flips the interface language (lib/i18n.sh) in any selector, which
+# then redraws itself in place. A caller that has more on screen than the
+# prompt — the dashboard, with its status card — sets UI_SELECT_LANG_EXIT=1 for
+# the call, and gets this value back instead, so it can redraw everything.
+PROMPT_LANG_CHANGED="__lang__"
+
 # Build one option record:
 #   prompt_opt <value> <label> [hint] [level] [active_note]
 #
@@ -78,6 +84,48 @@ _prompt_split() {
       PROMPT_ACTIVE="${rest#*${PROMPT_US}}"
     fi
   fi
+}
+
+# Split a record and translate what the user reads of it. The value is an
+# identifier the caller compares against, so it never changes. Translating at
+# draw time rather than when the record is built is what lets Shift+L redraw an
+# open prompt in the other language.
+_prompt_split_t() {
+  _prompt_split "$1"
+  _t "${PROMPT_LABEL}";  PROMPT_LABEL="${UI_T}"
+  _t "${PROMPT_HINT}";   PROMPT_HINT="${UI_T}"
+  _t "${PROMPT_ACTIVE}"; PROMPT_ACTIVE="${UI_T}"
+}
+
+# The key legend after a question, into UI_T. It names Shift+L in the language
+# it would switch TO, so it is readable to whoever needs it.
+# Usage: _prompt_keys <select|multi>
+_prompt_keys() {
+  if ui_lang_is_zh; then
+    case "$1" in
+      multi) UI_T="(空格勾选, a 全选, 回车确认, L English)" ;;
+      *)     UI_T="(方向键, 回车, L English)" ;;
+    esac
+  else
+    case "$1" in
+      multi) UI_T="(space toggles, a all, enter accepts, L 中文)" ;;
+      *)     UI_T="(arrows, enter, L 中文)" ;;
+    esac
+  fi
+}
+
+# The active question line of a drawn prompt, cleared first so a language flip
+# can rewrite it in place.
+# Usage: _prompt_draw_question <question> <select|multi>
+_prompt_draw_question() {
+  local question=""
+
+  _t "$1"; question="${UI_T}"
+  _prompt_keys "$2"
+  printf '\033[2K%s%s%s  %s%s%s %s%s%s\n' \
+    "${UI_CYAN}" "${UI_S_ACTIVE}" "${UI_RESET}" \
+    "${UI_BOLD}" "${question}" "${UI_RESET}" \
+    "${UI_DIM}" "${UI_T}" "${UI_RESET}" >&2
 }
 
 # Draw the hint column for the option just split.
@@ -174,13 +222,14 @@ _prompt_draw_options() {
   # Hints line up in their own column, so the list reads as two columns rather
   # than one run-on sentence. Only pad when there is something to line up.
   for record in "$@"; do
-    _prompt_split "${record}"
-    [[ "${#PROMPT_LABEL}" -gt "${width}" ]] && width="${#PROMPT_LABEL}"
+    _prompt_split_t "${record}"
+    _ui_width "${PROMPT_LABEL}"
+    [[ "${UI_WIDTH}" -gt "${width}" ]] && width="${UI_WIDTH}"
     [[ -n "${PROMPT_HINT}" ]] && hinted=1
   done
 
   for record in "$@"; do
-    _prompt_split "${record}"
+    _prompt_split_t "${record}"
     label="${PROMPT_LABEL}"
     if [[ "${hinted}" -eq 1 ]]; then
       label="$(_ui_cell "${label}" "${width}")"
@@ -216,38 +265,34 @@ _prompt_select_plain() {
   local selected="$2"
   shift 2
   local -a options=("$@")
-  local record="" answer="" i=0 hint=""
+  local record="" answer=""
   local count="${#options[@]}"
   local default_value=""
 
   _prompt_split "${options[${selected}]}"
   default_value="${PROMPT_VALUE}"
 
-  printf '%s\n' "${question}" >&2
-  i=0
-  # There is no cursor in a numbered list, so nothing can reveal the active
-  # note on selection: it is shown on every row instead. The state must not be
-  # unavailable just because the terminal cannot draw.
-  for record in "${options[@]}"; do
-    _prompt_split "${record}"
-    hint="${PROMPT_HINT}"
-    if [[ -n "${PROMPT_ACTIVE}" ]]; then
-      hint="${hint:+${hint} }(${PROMPT_ACTIVE})"
-    fi
-    if [[ -n "${hint}" ]]; then
-      printf '  [%d] %-10s %s\n' "$(( i + 1 ))" "${PROMPT_VALUE}" "${hint}" >&2
-    else
-      printf '  [%d] %s\n' "$(( i + 1 ))" "${PROMPT_VALUE}" >&2
-    fi
-    i=$(( i + 1 ))
-  done
+  _prompt_print_plain_list "${question}" "${options[@]}"
 
   while true; do
-    printf 'choose [%s]: ' "${default_value}" >&2
+    if ui_lang_is_zh; then
+      printf '选择 [%s]（L English）: ' "${default_value}" >&2
+    else
+      printf 'choose [%s] (L 中文): ' "${default_value}" >&2
+    fi
     IFS= read -r answer || answer=""
     if [[ -z "${answer}" ]]; then
       printf '%s\n' "${default_value}"
       return 0
+    fi
+    if [[ "${answer}" == "L" ]]; then
+      ui_lang_toggle
+      if [[ "${UI_SELECT_LANG_EXIT:-0}" -eq 1 ]]; then
+        printf '%s\n' "${PROMPT_LANG_CHANGED}"
+        return 0
+      fi
+      _prompt_print_plain_list "${question}" "${options[@]}"
+      continue
     fi
     if [[ "${answer}" =~ ^[0-9]+$ ]] && (( answer >= 1 && answer <= count )); then
       _prompt_split "${options[$(( answer - 1 ))]}"
@@ -261,7 +306,35 @@ _prompt_select_plain() {
         return 0
       fi
     done
-    printf 'please choose one of the listed options\n' >&2
+    _t "please choose one of the listed options"
+    printf '%s\n' "${UI_T}" >&2
+  done
+}
+
+# The question and the numbered list of the plain selector. The number and the
+# value are what the user types, so only the hints are translated.
+_prompt_print_plain_list() {
+  local question="$1"
+  shift
+  local record="" hint="" i=0
+
+  _t "${question}"
+  printf '%s\n' "${UI_T}" >&2
+  # There is no cursor in a numbered list, so nothing can reveal the active
+  # note on selection: it is shown on every row instead. The state must not be
+  # unavailable just because the terminal cannot draw.
+  for record in "$@"; do
+    _prompt_split_t "${record}"
+    hint="${PROMPT_HINT}"
+    if [[ -n "${PROMPT_ACTIVE}" ]]; then
+      hint="${hint:+${hint} }(${PROMPT_ACTIVE})"
+    fi
+    if [[ -n "${hint}" ]]; then
+      printf '  [%d] %-10s %s\n' "$(( i + 1 ))" "${PROMPT_VALUE}" "${hint}" >&2
+    else
+      printf '  [%d] %s\n' "$(( i + 1 ))" "${PROMPT_VALUE}" >&2
+    fi
+    i=$(( i + 1 ))
   done
 }
 
@@ -274,13 +347,14 @@ _prompt_draw_checks() {
   local i=0 record="" mark="" state="" label="" width=0 hinted=0
 
   for record in "$@"; do
-    _prompt_split "${record}"
-    [[ "${#PROMPT_LABEL}" -gt "${width}" ]] && width="${#PROMPT_LABEL}"
+    _prompt_split_t "${record}"
+    _ui_width "${PROMPT_LABEL}"
+    [[ "${UI_WIDTH}" -gt "${width}" ]] && width="${UI_WIDTH}"
     [[ -n "${PROMPT_HINT}" ]] && hinted=1
   done
 
   for record in "$@"; do
-    _prompt_split "${record}"
+    _prompt_split_t "${record}"
     label="${PROMPT_LABEL}"
     if [[ "${hinted}" -eq 1 ]]; then
       label="$(_ui_cell "${label}" "${width}")"
@@ -316,8 +390,9 @@ _prompt_draw_checks() {
 }
 
 # ui_select <question> <default_value> <option record>...
-# Echoes the chosen value. Arrow keys or j/k move, Enter accepts; the initial
-# highlight is the option whose value matches <default_value>.
+# Echoes the chosen value. Arrow keys or j/k move, Enter accepts, Shift+L flips
+# the language; the initial highlight is the option whose value matches
+# <default_value>.
 ui_select() {
   local question="$1"
   local default_value="$2"
@@ -355,10 +430,7 @@ ui_select() {
   fi
 
   ui_gap
-  printf '%s%s%s  %s%s%s %s%s%s\n' \
-    "${UI_CYAN}" "${UI_S_ACTIVE}" "${UI_RESET}" \
-    "${UI_BOLD}" "${question}" "${UI_RESET}" \
-    "${UI_DIM}" "(arrows, enter)" "${UI_RESET}" >&2
+  _prompt_draw_question "${question}" select
 
   _prompt_cursor_hide
   _prompt_draw_options "${selected}" "${options[@]}"
@@ -377,6 +449,24 @@ ui_select() {
         ;;
       q|esc)
         break
+        ;;
+      L)
+        ui_lang_toggle
+        if [[ "${UI_SELECT_LANG_EXIT:-0}" -eq 1 ]]; then
+          # Clear the prompt and hand back; the caller redraws in the new language.
+          _prompt_redraw_up $(( count + 1 ))
+          for (( i = 0; i <= count; i++ )); do
+            printf '\033[2K\n' >&2
+          done
+          _prompt_redraw_up $(( count + 1 ))
+          _prompt_cursor_show
+          printf '%s\n' "${PROMPT_LANG_CHANGED}"
+          return 0
+        fi
+        _prompt_redraw_up $(( count + 1 ))
+        _prompt_draw_question "${question}" select
+        _prompt_draw_options "${selected}" "${options[@]}"
+        continue
         ;;
       *)
         # A digit picks that option outright.
@@ -430,6 +520,10 @@ ui_input() {
     printf '%s\n' "${default_value}"
     return 0
   fi
+
+  # Free text: L is an ordinary letter here, so this prompt cannot flip the
+  # language, only follow it.
+  _t "${question}"; question="${UI_T}"
 
   if ! _prompt_can_draw; then
     if [[ -n "${default_value}" ]]; then
@@ -499,10 +593,7 @@ ui_multiselect() {
   fi
 
   ui_gap
-  printf '%s%s%s  %s%s%s %s%s%s\n' \
-    "${UI_CYAN}" "${UI_S_ACTIVE}" "${UI_RESET}" \
-    "${UI_BOLD}" "${question}" "${UI_RESET}" \
-    "${UI_DIM}" "(space toggles, a all, enter accepts)" "${UI_RESET}" >&2
+  _prompt_draw_question "${question}" multi
 
   _prompt_cursor_hide
   _prompt_draw_checks "${cursor}" checked "${options[@]}"
@@ -510,6 +601,13 @@ ui_multiselect() {
   while true; do
     _prompt_read_key
     case "${PROMPT_KEY}" in
+      L)
+        ui_lang_toggle
+        _prompt_redraw_up $(( count + 1 ))
+        _prompt_draw_question "${question}" multi
+        _prompt_draw_checks "${cursor}" checked "${options[@]}"
+        continue
+        ;;
       up|k)    cursor=$(( cursor > 0 ? cursor - 1 : count - 1 )) ;;
       down|j)  cursor=$(( cursor < count - 1 ? cursor + 1 : 0 )) ;;
       space)

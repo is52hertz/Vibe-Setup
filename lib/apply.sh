@@ -1332,9 +1332,15 @@ orchestrator_dashboard() {
 
     # The selector starts on the first entry, because dashboard_actions already
     # put the most useful one there.
+    # A language flip comes back as PROMPT_LANG_CHANGED rather than redrawing
+    # just the menu, so the status card above it is redrawn in the new language
+    # too, instead of leaving half the screen in the old one.
     _prompt_split "${actions[0]}"
-    choice="$(ui_select "What would you like to do?" "${PROMPT_VALUE}" "${actions[@]}")"
+    choice="$(UI_SELECT_LANG_EXIT=1 ui_select "What would you like to do?" "${PROMPT_VALUE}" "${actions[@]}")"
     case "${choice}" in
+      "${PROMPT_LANG_CHANGED}")
+        continue
+        ;;
       sync)
         info "applying template set: ${TEMPLATE_SET_LABEL}"
         apply_templates "${project_dir}"
