@@ -21,6 +21,14 @@
 # time output is piped.
 #
 # Compatible with macOS Bash 3.2.
+#
+# Every message passes through lib/i18n.sh's _t on its way out, which is how
+# Shift+L can switch the whole interface to Chinese without any caller knowing.
+# In English _t returns its input, so neither rendering changes by a byte.
+case "${BASH_SOURCE[0]}" in
+  */*) . "${BASH_SOURCE[0]%/*}/i18n.sh" ;;
+  *)   . "./i18n.sh" ;;
+esac
 
 # Color and layout are decided together: a caller that asked for no color (or is
 # not a terminal) gets the plain frame as well. Detection looks at stderr, since
@@ -111,6 +119,10 @@ _ui_repeat() {
 # Flatten a value onto one line and pad it to a fixed width. Newlines are the
 # hazard here: `git rev-parse` on a repository with no commits returns two lines,
 # and one of those in a status row breaks the layout.
+#
+# Width is display columns, not characters: a Chinese label takes two columns
+# per character, and padding it by its character count leaves the next column
+# ragged.
 _ui_cell() {
   local text="$1"
   local width="$2"
@@ -119,10 +131,16 @@ _ui_cell() {
   text="${text//$'\r'/ }"
   text="${text//$'\t'/ }"
 
-  if (( ${#text} > width )); then
-    text="${text:0:width - 3}..."
+  _ui_width "${text}"
+  if (( UI_WIDTH > width )); then
+    while (( UI_WIDTH > width - 3 )) && [[ -n "${text}" ]]; do
+      text="${text%?}"
+      _ui_width "${text}"
+    done
+    text="${text}..."
+    _ui_width "${text}"
   fi
-  printf '%s%s' "${text}" "$(_ui_repeat " " $(( width - ${#text} )))"
+  printf '%s%s' "${text}" "$(_ui_repeat " " $(( width - UI_WIDTH )))"
 }
 
 # One line hanging off the gutter, or one plain-prefixed line.
@@ -139,6 +157,8 @@ _ui_emit() {
 ui_intro() {
   local title="$1"
   local subtitle="${2:-}"
+
+  _t "${subtitle}"; subtitle="${UI_T}"
 
   if [[ "${UI_RICH}" -ne 1 ]]; then
     if [[ -n "${subtitle}" ]]; then
@@ -159,14 +179,17 @@ ui_intro() {
 
 # Close the run.
 ui_outro() {
+  local message=""
+
+  _t "$1"; message="${UI_T}"
   if [[ "${UI_RICH}" -ne 1 ]]; then
-    printf '%s %s\n' "${UI_PLAIN_PREFIX}" "$1" >&2
+    printf '%s %s\n' "${UI_PLAIN_PREFIX}" "${message}" >&2
     return
   fi
 
   ui_gap
   printf '%s%s%s  %s%s%s\n\n' \
-    "${UI_DIM}" "${UI_G_END}" "${UI_RESET}" "${UI_BOLD}" "$1" "${UI_RESET}" >&2
+    "${UI_DIM}" "${UI_G_END}" "${UI_RESET}" "${UI_BOLD}" "${message}" "${UI_RESET}" >&2
 }
 
 # A bare gutter line, for breathing room between steps. Nothing in plain mode.
@@ -181,6 +204,9 @@ ui_gap() {
 ui_step() {
   local label="$1"
   local value="${2:-}"
+
+  _t "${label}"; label="${UI_T}"
+  _t "${value}"; value="${UI_T}"
 
   if [[ "${UI_RICH}" -ne 1 ]]; then
     if [[ -n "${value}" ]]; then
@@ -202,13 +228,16 @@ ui_step() {
 # A heading for a group of rows or log lines. Like a prompt, it opens with a
 # blank gutter line so it separates from whatever came before it.
 ui_section() {
+  local title=""
+
+  _t "$1"; title="${UI_T}"
   if [[ "${UI_RICH}" -ne 1 ]]; then
-    printf '%s %s\n' "${UI_PLAIN_PREFIX}" "$1" >&2
+    printf '%s %s\n' "${UI_PLAIN_PREFIX}" "${title}" >&2
     return
   fi
   ui_gap
   printf '%s%s%s  %s%s%s\n' \
-    "${UI_DIM}" "${UI_S_STEP}" "${UI_RESET}" "${UI_BOLD}" "$1" "${UI_RESET}" >&2
+    "${UI_DIM}" "${UI_S_STEP}" "${UI_RESET}" "${UI_BOLD}" "${title}" "${UI_RESET}" >&2
 }
 
 # An aligned label/value row inside a section. The label column defaults to
@@ -218,6 +247,18 @@ ui_kv() {
   local label="$1"
   local value="$2"
   local width="${3:-${UI_LABEL_WIDTH}}"
+
+  _t "${label}"; label="${UI_T}"
+  _t "${value}"; value="${UI_T}"
+  _ui_kv_row "${label}" "${value}" "${width}"
+}
+
+# The row itself, already translated. ui_kv_state comes here directly, since its
+# value carries color codes that no catalog entry could match.
+_ui_kv_row() {
+  local label="$1"
+  local value="$2"
+  local width="$3"
 
   if [[ "${UI_RICH}" -ne 1 ]]; then
     printf '%s   %s %s\n' "${UI_PLAIN_PREFIX}" "$(_ui_cell "${label}" "${width}")" "${value}" >&2
@@ -284,6 +325,10 @@ ui_kv_state() {
   local width="${5:-${UI_LABEL_WIDTH}}"
   local value=""
 
+  _t "${label}"; label="${UI_T}"
+  _t "${state}"; state="${UI_T}"
+  _t "${detail}"; detail="${UI_T}"
+
   if [[ -n "${detail}" ]]; then
     value="${state} (${detail})"
   else
@@ -291,7 +336,7 @@ ui_kv_state() {
   fi
 
   if [[ "${UI_RICH}" -ne 1 ]]; then
-    ui_kv "${label}" "${value}" "${width}"
+    _ui_kv_row "${label}" "${value}" "${width}"
     return
   fi
 
@@ -299,7 +344,7 @@ ui_kv_state() {
   if [[ -n "${detail}" ]]; then
     value="${value} ${UI_DIM}(${detail})${UI_RESET}"
   fi
-  ui_kv "${label}" "${value}" "${width}"
+  _ui_kv_row "${label}" "${value}" "${width}"
 }
 
 # The four message levels. Plain mode keeps the exact wording the tool has always
@@ -310,11 +355,16 @@ ui_kv_state() {
 # is being applied — and they sit under the section headings and status rows that
 # the eye should land on first. Undimmed they competed with the content for
 # attention and made a routine sync read like a wall of alarms.
+#
+# A line the catalog marks as skipped is the tail of a sentence it already
+# printed whole on the first line, so nothing is emitted for it.
 ui_info() {
+  _t "$*"
+  [[ "${UI_T_SKIP}" -eq 0 ]] || return 0
   if [[ "${UI_RICH}" -eq 1 ]]; then
-    _ui_emit "${UI_DIM}$*${UI_RESET}"
+    _ui_emit "${UI_DIM}${UI_T}${UI_RESET}"
   else
-    _ui_emit "$*"
+    _ui_emit "${UI_T}"
   fi
 }
 
@@ -323,26 +373,36 @@ ui_info() {
 ui_log() { ui_info "$@"; }
 
 ui_ok() {
+  _t "$*"
+  [[ "${UI_T_SKIP}" -eq 0 ]] || return 0
   if [[ "${UI_RICH}" -eq 1 ]]; then
-    _ui_emit "${UI_GREEN}${UI_S_OK}${UI_RESET} $*"
+    _ui_emit "${UI_GREEN}${UI_S_OK}${UI_RESET} ${UI_T}"
   else
-    _ui_emit "$*"
+    _ui_emit "${UI_T}"
   fi
 }
 
 ui_warn() {
+  _t "$*"
+  [[ "${UI_T_SKIP}" -eq 0 ]] || return 0
   if [[ "${UI_RICH}" -eq 1 ]]; then
-    _ui_emit "${UI_YELLOW}${UI_S_WARN} $*${UI_RESET}"
+    _ui_emit "${UI_YELLOW}${UI_S_WARN} ${UI_T}${UI_RESET}"
+  elif [[ "${UI_LANG}" == "zh" ]]; then
+    _ui_emit "警告：${UI_T}"
   else
-    _ui_emit "warning: $*"
+    _ui_emit "warning: ${UI_T}"
   fi
 }
 
 ui_error() {
+  _t "$*"
+  [[ "${UI_T_SKIP}" -eq 0 ]] || return 0
   if [[ "${UI_RICH}" -eq 1 ]]; then
-    _ui_emit "${UI_RED}${UI_S_ERR} $*${UI_RESET}"
+    _ui_emit "${UI_RED}${UI_S_ERR} ${UI_T}${UI_RESET}"
+  elif [[ "${UI_LANG}" == "zh" ]]; then
+    _ui_emit "错误：${UI_T}"
   else
-    _ui_emit "error: $*"
+    _ui_emit "error: ${UI_T}"
   fi
 }
 
@@ -357,6 +417,8 @@ ui_error() {
 ui_copy_open() {
   local title="${1:-}"
   local rule=""
+
+  _t "${title}"; title="${UI_T}"
 
   rule="$(_ui_repeat "${UI_RULE}" 10)"
   if [[ -n "${title}" ]]; then

@@ -12,6 +12,10 @@
 
 set -uo pipefail
 
+# The suites assert on the English text; a user who starts vibe-init in
+# Chinese must not turn every assertion red.
+unset VIBE_INIT_LANG
+
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
@@ -1177,6 +1181,71 @@ mkdir -p "${TRP}/.trellis"
 cat "${TEMPLATE_ROOT}/blocks/integrations/trellis.md" >> "${TRP}/AGENTS.md"
 has "the block toggle says Trellis itself stays" \
   "$(trellis_ops "${TRP}" no "" 'toggle_trellis_integration "${TR_PROJ}"')" "Trellis itself stays set up"
+
+# --- the interface language ---------------------------------------------------
+# English is the source text: a lookup returns its input untouched, which is
+# what keeps the plain rendering byte for byte what scripts already parse.
+# Shift+L switches to Chinese for the rest of the run.
+is "English returns its input" "$(UI_LANG=en; _t "Project environment"; printf '%s' "${UI_T}")" "Project environment"
+is "English skips nothing" "$(UI_LANG=en; _t "lines below to convert it:"; printf '%s' "${UI_T_SKIP}")" "0"
+is "Chinese translates a fixed string" "$(UI_LANG=zh; _t "Project environment"; printf '%s' "${UI_T}")" "项目环境"
+is "Chinese keeps the value in a message" \
+  "$(UI_LANG=zh; _t "copied /p/AGENTS.md"; printf '%s' "${UI_T}")" "已复制 /p/AGENTS.md"
+is "Chinese translates a sync reveal piece by piece" \
+  "$(UI_LANG=zh; _t "v1.0.0 -> v1.1.0, 2 new, 1 to convert"; printf '%s' "${UI_T}")" \
+  "v1.0.0 -> v1.1.0，2 个新增，1 个待转换"
+is "Chinese translates a flattened sync label" \
+  "$(UI_LANG=zh; _t "already exists — needs review (2 blocks)"; printf '%s' "${UI_T}")" "已存在 — 需要审阅（2 个块）"
+is "an unknown string falls back to English" \
+  "$(UI_LANG=zh; _t "Claude Code (also read by Codex)"; printf '%s' "${UI_T}")" "Claude Code (also read by Codex)"
+# A sentence printed over several info lines reads as one Chinese sentence.
+out="$( { UI_LANG=zh
+  ui_info "once the conversion is done and the .template files are deleted, run"
+  ui_info "vibe-init --apply again: that sync compares the new blocks with the"
+  ui_info "templates and prints the prompt for merging their content."; } 2>&1 )"
+is "a multi-line sentence prints as one line" "$(printf '%s\n' "${out}" | wc -l | tr -d ' ')" "1"
+has "and says the whole of it" "${out}" "再运行一次 vibe-init --apply"
+
+UI_WIDTH=0; _ui_width "abc"; is "ASCII is one column a character" "${UI_WIDTH}" "3"
+_ui_width "同步模板"; is "CJK is two columns a character" "${UI_WIDTH}" "8"
+_ui_width "a — b"; is "a dash is one column" "${UI_WIDTH}" "5"
+is "a CJK cell pads by display width" "$(_ui_cell "同步" 6)|" "同步  |"
+
+# The selectors run in $(...): a flip there has to reach the shell that prints
+# the next line, through the run's language file.
+out="$( UI_LANG=en; UI_LANG_FILE="${WORK}/lang-flip"; rm -f "${UI_LANG_FILE}"
+  ( ui_lang_toggle )
+  _t "Back"; printf '%s' "${UI_T}" )"
+is "a flip in a subshell reaches the parent" "${out}" "返回"
+out="$( UI_LANG=en; UI_LANG_FILE=""; ( ui_lang_toggle ); _t "Back"; printf '%s' "${UI_T}" )"
+is "with no language file the language stays put" "${out}" "Back"
+
+# The plain numbered selector takes L and Enter. Drawing a terminal is out of
+# reach here, so the two terminal checks are stubbed to "can ask, cannot draw".
+# lang_select <stdin> <exit_mode>; the answer goes to WORK/sel.out, the drawing
+# to WORK/sel.err.
+lang_select() {
+  ( UI_LANG=en; UI_LANG_FILE="${WORK}/lang-sel"; rm -f "${UI_LANG_FILE}"
+    _prompt_can_ask() { return 0; }
+    _prompt_can_draw() { return 1; }
+    UI_SELECT_LANG_EXIT="$2"
+    printf '%b' "$1" | ui_select "What would you like to do?" back \
+      "$(prompt_opt go "Go" "templates")" "$(prompt_opt back "Back")" \
+      > "${WORK}/sel.out" 2> "${WORK}/sel.err" )
+}
+lang_select 'L\n' 1
+is  "L in the dashboard's selector hands back the flip" "$(cat "${WORK}/sel.out")" "${PROMPT_LANG_CHANGED}"
+is  "and records the new language" "$(cat "${WORK}/lang-sel")" "zh"
+lang_select 'L\n\n' 0
+is  "L in any other selector redraws and keeps asking" "$(cat "${WORK}/sel.out")" "back"
+has "the redraw is in Chinese" "$(cat "${WORK}/sel.err")" "要做什么？"
+has "hints included" "$(cat "${WORK}/sel.err")" "模板"
+
+# The status card in Chinese keeps no English state word behind.
+out="$( { UI_LANG=zh; show_project_diagnostics "${WORK}/trnever"; } 2>&1 )"
+has   "the card renders in Chinese" "${out}" "项目环境"
+hasnt "no English state is left on it" "${out}" "Not initialized"
+hasnt "nor an English label" "${out}" "Git repo"
 
 echo
 if [[ "${FAIL}" -eq 0 ]]; then

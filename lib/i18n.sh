@@ -1,0 +1,521 @@
+#!/usr/bin/env bash
+# lib/i18n.sh — the interface language: English, or Simplified Chinese.
+#
+# Sourced by lib/ui.sh, so every caller that has the renderer has this too.
+#
+# English is the source text and the default, and in English every lookup
+# returns its input untouched — the plain rendering stays byte for byte what it
+# always was. Translation happens at the rendering layer: lib/ui.sh and
+# lib/prompt.sh pass each message, label and hint through _t on the way out,
+# so the rest of the code keeps writing plain English and never knows.
+#
+# A run starts in English unless VIBE_INIT_LANG names Chinese (zh, zh_CN,
+# zh-CN, ...). Shift+L in any selector flips it for the rest of the run; nothing
+# is remembered afterwards.
+#
+# The selectors run inside $(...), so a flip made there is invisible to the
+# shell that will print the next line. The entrypoint therefore points
+# UI_LANG_FILE at a file in a private run directory, a flip writes it, and every
+# lookup reads it back — a builtin read, no fork. Unset (the tests, or a run
+# with no terminal to press a key in), the language simply stays put.
+#
+# Messages built with a value in them ("copied <path>") are matched by regex,
+# capturing the value. A sentence the code prints over several info lines is
+# translated whole on its first line, and the continuation lines are marked to
+# be skipped, so the Chinese reads as one sentence rather than three fragments.
+#
+# Compatible with macOS Bash 3.2: no associative arrays, so the catalog is a
+# case statement plus an ordered list of regexes.
+
+UI_LANG="en"
+case "${VIBE_INIT_LANG:-}" in
+  zh|zh_*|zh-*) UI_LANG="zh" ;;
+esac
+UI_LANG_FILE="${UI_LANG_FILE:-}"
+
+# _t's results, as globals rather than stdout: the selector translates every
+# row on every keypress, and a fork per lookup would be felt.
+UI_T=""
+UI_T_SKIP=0
+
+# Pick up a flip made in a subshell.
+_ui_lang_sync() {
+  if [[ -n "${UI_LANG_FILE}" && -f "${UI_LANG_FILE}" ]]; then
+    IFS= read -r UI_LANG < "${UI_LANG_FILE}" || true
+  fi
+  return 0
+}
+
+# Flip the language for the rest of the run.
+ui_lang_toggle() {
+  _ui_lang_sync
+  if [[ "${UI_LANG}" == "zh" ]]; then
+    UI_LANG="en"
+  else
+    UI_LANG="zh"
+  fi
+  if [[ -n "${UI_LANG_FILE}" ]]; then
+    printf '%s\n' "${UI_LANG}" > "${UI_LANG_FILE}" 2>/dev/null || true
+  fi
+  return 0
+}
+
+# Is the interface currently in Chinese?
+ui_lang_is_zh() {
+  _ui_lang_sync
+  [[ "${UI_LANG}" == "zh" ]]
+}
+
+# Translate one string into UI_T. UI_T_SKIP=1 means "print nothing": the line
+# is the tail of a sentence already printed whole.
+_t() {
+  UI_T="$1"
+  UI_T_SKIP=0
+  _ui_lang_sync
+  [[ "${UI_LANG}" == "zh" && -n "$1" ]] || return 0
+  _i18n_zh "$1"
+  return 0
+}
+
+# Display width of a string, into UI_WIDTH: a CJK character takes two columns.
+# Counted on the UTF-8 bytes under LC_ALL=C (local to this function, which Bash
+# 3.2 restores on return), so the answer does not depend on the user's locale:
+# lead bytes E3-E9 and EF open the CJK and full-width ranges (two columns);
+# every other multi-byte character — the dashes, arrows and ticks the tool
+# prints — takes one.
+UI_WIDTH=0
+_ui_width() {
+  local LC_ALL=C
+  local s="$1" t=""
+  local bytes=0 n2=0 n3=0 n4=0 wide=0
+
+  bytes="${#s}"
+  t="${s//[^$'\xc0'-$'\xdf']/}"; n2="${#t}"
+  t="${s//[^$'\xe0'-$'\xef']/}"; n3="${#t}"
+  t="${s//[^$'\xf0'-$'\xf7']/}"; n4="${#t}"
+  t="${s//[^$'\xe3'-$'\xe9'$'\xef']/}"; wide="${#t}"
+  UI_WIDTH=$(( bytes - n2 - 2 * n3 - 3 * n4 + wide + n4 ))
+}
+
+# Match the string being translated against a regex; captures in BASH_REMATCH.
+_I18N_S=""
+_i18n_m() {
+  [[ "${_I18N_S}" =~ $1 ]]
+}
+
+# "3 new, 1 to review" -> "3 个新增，1 个待审阅". Returns 1 when the string is
+# not such a list, so the caller can keep looking.
+_i18n_counts() {
+  local s="$1" out="" part="" rest=""
+
+  rest="${s}, "
+  while [[ -n "${rest}" ]]; do
+    part="${rest%%, *}"
+    rest="${rest#*, }"
+    case "${part}" in
+      *" new")        part="${part% new} 个新增" ;;
+      *" to refresh") part="${part% to refresh} 个待刷新" ;;
+      *" to review")  part="${part% to review} 个待审阅" ;;
+      *" to convert") part="${part% to convert} 个待转换" ;;
+      *) return 1 ;;
+    esac
+    [[ "${part%% *}" =~ ^[0-9]+$ ]] || return 1
+    out="${out:+${out}，}${part}"
+  done
+  UI_T="${out}"
+}
+
+_i18n_zh() {
+  # Reset here, not only in _t: the flattened-label rule recurses, and a miss
+  # must read back as the input, not as whatever the outer lookup left behind.
+  UI_T="$1"
+  _I18N_S="$1"
+
+  case "$1" in
+    # --- frame and prompts ---------------------------------------------------
+    "project orchestrator") UI_T="项目编排" ;;
+    "AI agent setup for a new project") UI_T="为新项目配置 AI agent" ;;
+    "Yes") UI_T="是" ;;
+    "No") UI_T="否" ;;
+    "Back") UI_T="返回" ;;
+    "Exit") UI_T="退出" ;;
+    "on") UI_T="开" ;;
+    "off") UI_T="关" ;;
+    "please choose one of the listed options") UI_T="请从列出的选项中选择" ;;
+
+    # --- diagnostics card ----------------------------------------------------
+    "Project environment") UI_T="项目环境" ;;
+    "Git repo") UI_T="Git 仓库" ;;
+    "Platforms") UI_T="平台" ;;
+    "Test checklist") UI_T="测试清单" ;;
+    "Format upgrade") UI_T="格式升级" ;;
+    "Not initialized") UI_T="未初始化" ;;
+    "Not configured") UI_T="未配置" ;;
+    "None") UI_T="无" ;;
+    "Disabled") UI_T="未启用" ;;
+    "Not included") UI_T="未包含" ;;
+    "Missing") UI_T="缺失" ;;
+    "Initialized") UI_T="已初始化" ;;
+    "Active") UI_T="已启用" ;;
+    "Paused") UI_T="已暂停" ;;
+    "CLI not installed") UI_T="CLI 未安装" ;;
+    "Modern") UI_T="新格式" ;;
+    "Legacy") UI_T="旧格式" ;;
+    "unknown") UI_T="未知" ;;
+    "restore it from Trellis management") UI_T="可在 Trellis 管理中恢复" ;;
+    "<TAG> format") UI_T="<TAG> 格式" ;;
+    "pre-<TAG> format") UI_T="pre-<TAG> 格式" ;;
+    "project not tracked yet") UI_T="项目尚未被记录" ;;
+    "sync, have your agent convert, then sync again to merge")
+      UI_T="先同步，让 agent 转换格式，再同步一次完成合并" ;;
+
+    # --- the dashboard menu --------------------------------------------------
+    "What would you like to do?") UI_T="要做什么？" ;;
+    "Sync template files") UI_T="同步模板文件" ;;
+    "templates") UI_T="模板" ;;
+    "Trellis management") UI_T="Trellis 管理" ;;
+    "platforms, update, pause, uninstall") UI_T="平台、更新、暂停、卸载" ;;
+    "Toggle CC-Workflow") UI_T="开关 CC-Workflow" ;;
+    "Toggle test checklist") UI_T="开关测试清单" ;;
+    "Toggle Trellis block") UI_T="开关 Trellis 块" ;;
+    "in AGENTS.md") UI_T="在 AGENTS.md 中" ;;
+    "Sync everything and exit") UI_T="全部同步后退出" ;;
+    "templates + Trellis, then exits") UI_T="模板 + Trellis，然后退出" ;;
+    "not installed") UI_T="未安装" ;;
+    "paused") UI_T="已暂停" ;;
+    "not initialized") UI_T="未初始化" ;;
+    "Trellis update only") UI_T="仅更新 Trellis" ;;
+    "nothing to do") UI_T="无事可做" ;;
+    "everything up to date") UI_T="全部已是最新" ;;
+    "All sync tasks finished.") UI_T="所有同步任务已完成。" ;;
+
+    # --- template sync -------------------------------------------------------
+    "not in this set") UI_T="不在本模板集中" ;;
+    "up to date") UI_T="已是最新" ;;
+    "already exists — will refresh") UI_T="已存在 — 将刷新" ;;
+    "already exists — needs review") UI_T="已存在 — 需要审阅" ;;
+    "already exists — needs format conversion") UI_T="已存在 — 需要格式转换" ;;
+    "Which files?") UI_T="要同步哪些文件？" ;;
+    "Copy all of these files?") UI_T="复制以上全部文件？" ;;
+    "Enter numbers to copy (e.g. 1 3), or 'all'") UI_T="输入要复制的编号（如 1 3），或 'all'" ;;
+    "please enter one or more valid numbers") UI_T="请输入一个或多个有效编号" ;;
+    "please answer o, t, or s") UI_T="请输入 o、t 或 s" ;;
+    "Copying anyway would place a fresh copy of each template beside")
+      UI_T="强制复制会在已与模板一致的文件旁各放一份新的模板副本。如果你认为计划判断有误，选“是”。" ;;
+    "files that already match it. Say yes if the plan has it wrong.") UI_T_SKIP=1 ;;
+    "Copy the templates anyway?") UI_T="仍然复制模板？" ;;
+    "no files selected; nothing to apply") UI_T="未选择文件；无需同步" ;;
+    "Everything is up to date — nothing to sync.") UI_T="全部已是最新 — 无需同步。" ;;
+    "copy the prompt between the lines below and give it to your AI agent:")
+      UI_T="复制下面两条分隔线之间的提示词，交给你的 AI agent：" ;;
+    "suggested prompt for your AI agent") UI_T="给 AI agent 的建议提示词" ;;
+    "1 of them is in the old pre-<TAG> format; copy the prompt between the")
+      UI_T="其中 1 个是旧的 pre-<TAG> 格式；复制下面分隔线之间的提示词来转换它：" ;;
+    "lines below to convert it:") UI_T_SKIP=1 ;;
+    "between the lines below to convert them:") UI_T_SKIP=1 ;;
+    "once the conversion is done and the .template files are deleted, run")
+      UI_T="转换完成并删除 .template 文件后，再运行一次 vibe-init --apply：那次同步会把新的块与模板比对，并打印合并内容用的提示词。" ;;
+    "vibe-init --apply again: that sync compares the new blocks with the") UI_T_SKIP=1 ;;
+    "templates and prints the prompt for merging their content.") UI_T_SKIP=1 ;;
+    "Sync result") UI_T="同步结果" ;;
+    "created") UI_T="已创建" ;;
+    "refreshed") UI_T="已刷新" ;;
+    "needs review") UI_T="需要审阅" ;;
+    "needs format conversion") UI_T="需要格式转换" ;;
+    "your edits, template unchanged") UI_T="你的修改，模板未变" ;;
+    "whole file") UI_T="整个文件" ;;
+    "differs from the template") UI_T="与模板不同" ;;
+
+    # --- CC-Workflow, checklist and Trellis-block toggles --------------------
+    "CC-Workflow is currently ENABLED.") UI_T="CC-Workflow 当前已启用。" ;;
+    "Disable CC-Workflow and archive the workflow file?") UI_T="停用 CC-Workflow 并归档工作流文件？" ;;
+    "Removed the CC-Workflow block from CLAUDE.md.") UI_T="已从 CLAUDE.md 移除 CC-Workflow 块。" ;;
+    "CLAUDE.md still mentions CC-Cowork-Workflow.md, but carries no")
+      UI_T="CLAUDE.md 仍提到 CC-Cowork-Workflow.md，但没有可移除的 <FEATURE id=\"cc-workflow\"> 块（旧格式）。" ;;
+    "<FEATURE id=\"cc-workflow\"> block to remove (pre-block format).") UI_T_SKIP=1 ;;
+    "Delete that section by hand, or the file will point at an archived document:")
+      UI_T="请手动删除这一节，否则它会指向一个已归档的文档：" ;;
+    "CC-Workflow is currently DISABLED.") UI_T="CC-Workflow 当前未启用。" ;;
+    "Enable CC-Workflow and reference it from CLAUDE.md?") UI_T="启用 CC-Workflow 并在 CLAUDE.md 中引用它？" ;;
+    "Kept your existing codex-run.md; the tool's copy is beside it as codex-run.md.template.")
+      UI_T="保留了你现有的 codex-run.md；工具的版本放在旁边的 codex-run.md.template。" ;;
+    "The workflow document will point at an agent this project does not have.")
+      UI_T="工作流文档将指向一个本项目没有的 agent。" ;;
+    "Restart Claude Code once before calling codex-run — agent definitions load at session start.")
+      UI_T="调用 codex-run 前请先重启一次 Claude Code — agent 定义在会话启动时加载。" ;;
+    "The test checklist is currently INCLUDED.") UI_T="测试清单当前已包含。" ;;
+    "Remove it and archive the file?") UI_T="移除并归档该文件？" ;;
+    "The test checklist is currently NOT INCLUDED.") UI_T="测试清单当前未包含。" ;;
+    "Add the manual test checklist to this project?") UI_T="为本项目添加手动测试清单？" ;;
+    "Kept your existing checklist; the tool's copy is beside it as .template.")
+      UI_T="保留了你现有的测试清单；工具的版本放在旁边的 .template。" ;;
+    "Added Test/templates-test-checklist.html.") UI_T="已添加 Test/templates-test-checklist.html。" ;;
+    "AGENTS.md still tells agents to follow Trellis.") UI_T="AGENTS.md 仍在要求 agent 遵循 Trellis。" ;;
+    "Remove the Trellis integration block from AGENTS.md?") UI_T="从 AGENTS.md 移除 Trellis 集成块？" ;;
+    "CC-Cowork-Workflow.md still describes the Trellis co-work loop. Toggle")
+      UI_T="CC-Cowork-Workflow.md 仍在描述 Trellis 协作流程。把 CC-Workflow 关闭再打开，即可切换为普通版本。" ;;
+    "CC-Workflow off and on again to switch it to the plain variant.") UI_T_SKIP=1 ;;
+    "Add the Trellis integration block back to AGENTS.md?") UI_T="把 Trellis 集成块加回 AGENTS.md？" ;;
+    "Removed the Trellis integration block from AGENTS.md.") UI_T="已从 AGENTS.md 移除 Trellis 集成块。" ;;
+    "Could not remove the block; AGENTS.md was left untouched.") UI_T="无法移除该块；AGENTS.md 未被改动。" ;;
+    "Added the Trellis integration block to AGENTS.md.") UI_T="已将 Trellis 集成块添加到 AGENTS.md。" ;;
+    "Could not append the block; AGENTS.md was left untouched.") UI_T="无法追加该块；AGENTS.md 未被改动。" ;;
+    "No AGENTS.md in this project yet — sync the template files first.")
+      UI_T="本项目还没有 AGENTS.md — 请先同步模板文件。" ;;
+    "AGENTS.md currently carries the Trellis integration block.") UI_T="AGENTS.md 当前包含 Trellis 集成块。" ;;
+    "This only edits AGENTS.md; Trellis itself stays set up. To take it out")
+      UI_T="这里只修改 AGENTS.md，Trellis 本身仍保持安装。要把它从项目中移除，请在 Trellis 管理中暂停或卸载。" ;;
+    "of the project, pause or uninstall it from Trellis management.") UI_T_SKIP=1 ;;
+    "Remove it from AGENTS.md?") UI_T="从 AGENTS.md 中移除？" ;;
+    "AGENTS.md has no Trellis integration block.") UI_T="AGENTS.md 中没有 Trellis 集成块。" ;;
+    "Add it to AGENTS.md?") UI_T="添加到 AGENTS.md？" ;;
+
+    # --- Trellis management --------------------------------------------------
+    "Trellis is paused in this project.") UI_T="本项目的 Trellis 已暂停。" ;;
+    "Trellis is not initialized in this project.") UI_T="本项目尚未初始化 Trellis。" ;;
+    "Restore Trellis") UI_T="恢复 Trellis" ;;
+    "Initialize Trellis") UI_T="初始化 Trellis" ;;
+    "Restore a paused Trellis") UI_T="恢复已暂停的 Trellis" ;;
+    "Trellis is restored.") UI_T="Trellis 已恢复。" ;;
+    "Add an AI platform") UI_T="添加 AI 平台" ;;
+    "Update the project") UI_T="更新项目" ;;
+    "Upgrade the Trellis CLI") UI_T="升级 Trellis CLI" ;;
+    "Pause Trellis") UI_T="暂停 Trellis" ;;
+    "Uninstall Trellis") UI_T="卸载 Trellis" ;;
+    "trellis ablate, restorable") UI_T="trellis ablate，可恢复" ;;
+    "trellis uninstall, deletes .trellis/") UI_T="trellis uninstall，会删除 .trellis/" ;;
+    "Which platform?") UI_T="哪个平台？" ;;
+    "Trellis is paused. Restore it from Trellis management.") UI_T="Trellis 已暂停。可在 Trellis 管理中恢复。" ;;
+    "Trellis is uninstalled from this project.") UI_T="已从本项目卸载 Trellis。" ;;
+    "Trellis CLI is not installed.") UI_T="Trellis CLI 未安装。" ;;
+    "and ask about the files you have edited.") UI_T_SKIP=1 ;;
+    "Run 'trellis update' anyway?") UI_T="仍然运行 'trellis update'？" ;;
+    "Pausing moves every Trellis file out of the project and keeps a recovery")
+      UI_T="暂停会把所有 Trellis 文件移出项目，并在本机 ~/.trellis 中保留一份恢复副本；恢复时会把任务、规格、日志和记忆原样带回。" ;;
+    "copy in ~/.trellis on this machine; Restore brings back tasks, specs,") UI_T_SKIP=1 ;;
+    "journals and memory exactly as they are now.") UI_T_SKIP=1 ;;
+    "The tasks, specs, journals and memory under .trellis/ are not all committed.")
+      UI_T=".trellis/ 下的任务、规格、日志和记忆并未全部提交。" ;;
+    "Uninstalling deletes them permanently. To keep them, pause Trellis instead,")
+      UI_T="卸载会永久删除它们。要保留，请改为暂停 Trellis，或先提交 .trellis/。" ;;
+    "or commit .trellis/ first.") UI_T_SKIP=1 ;;
+    "Uninstall and delete them anyway?") UI_T="仍要卸载并删除它们？" ;;
+    "npm not found. Cannot upgrade Trellis.") UI_T="未找到 npm，无法升级 Trellis。" ;;
+    "Upgrading Trellis CLI (npm install -g @mindfoldhq/trellis)...")
+      UI_T="正在升级 Trellis CLI（npm install -g @mindfoldhq/trellis）..." ;;
+
+    # --- scaffold ------------------------------------------------------------
+    "Node.js was not found. Trellis requires Node.js 18+.") UI_T="未找到 Node.js。Trellis 需要 Node.js 18+。" ;;
+    "python3 was not found. Trellis requires Python 3.9+.") UI_T="未找到 python3。Trellis 需要 Python 3.9+。" ;;
+    "npm was not found. It is required only if Trellis is not already installed.")
+      UI_T="未找到 npm。仅在尚未安装 Trellis 时需要它。" ;;
+    "installing Trellis with npm install -g @mindfoldhq/trellis")
+      UI_T="正在通过 npm install -g @mindfoldhq/trellis 安装 Trellis" ;;
+    "Claude Code only") UI_T="仅 Claude Code" ;;
+    "No platform flags") UI_T="不传平台参数" ;;
+    "Something else") UI_T="其他" ;;
+    "type the flags yourself") UI_T="自己输入参数" ;;
+    "Trellis platforms") UI_T="Trellis 平台" ;;
+    "Trellis platform flags") UI_T="Trellis 平台参数" ;;
+    "trellis exists, but trellis --version did not return a version.")
+      UI_T="trellis 命令存在，但 trellis --version 没有返回版本号。" ;;
+    "Reinstall the Trellis installer with npm install -g @mindfoldhq/trellis?")
+      UI_T="用 npm install -g @mindfoldhq/trellis 重新安装 Trellis？" ;;
+    "skipping Trellis initialization because the existing trellis command is not reporting a version.")
+      UI_T="跳过 Trellis 初始化：现有的 trellis 命令没有报告版本号。" ;;
+    "trellis command was not found.") UI_T="未找到 trellis 命令。" ;;
+    "Install the Trellis installer with npm install -g @mindfoldhq/trellis?")
+      UI_T="用 npm install -g @mindfoldhq/trellis 安装 Trellis？" ;;
+    "skipping Trellis initialization because Trellis is not installed.")
+      UI_T="跳过 Trellis 初始化：Trellis 未安装。" ;;
+    "Trellis developer name") UI_T="Trellis 开发者名称" ;;
+    "no Trellis platform flags will be passed") UI_T="不会传递 Trellis 平台参数" ;;
+    "skip git init (per --git no)") UI_T="跳过 git init（--git no）" ;;
+    "Initialize a git repository?") UI_T="初始化 git 仓库？" ;;
+    "skip git init") UI_T="跳过 git init" ;;
+    "git was not found; skipping git init") UI_T="未找到 git；跳过 git init" ;;
+    "Service / backend") UI_T="服务 / 后端" ;;
+    "APIs, datastores, long-running") UI_T="API、数据存储、长期运行" ;;
+    "Tool / script") UI_T="工具 / 脚本" ;;
+    "small CLIs, utilities") UI_T="小型 CLI、实用工具" ;;
+    "Decide later") UI_T="稍后决定" ;;
+    "keep both, let the project's AI resolve it") UI_T="两者都保留，让项目的 AI 决定" ;;
+    "What kind of project is this?") UI_T="这是什么类型的项目？" ;;
+    "Include CC-Cowork-Workflow (Claude Code external executor co-work)?")
+      UI_T="包含 CC-Cowork-Workflow（Claude Code 外部执行器协作）？" ;;
+    "Include the manual test checklist (Test/templates-test-checklist.html)?")
+      UI_T="包含手动测试清单（Test/templates-test-checklist.html）？" ;;
+    "Current directory is not empty. Project folder name") UI_T="当前目录不为空。项目文件夹名称" ;;
+    "Install and initialize Trellis for this project?") UI_T="为本项目安装并初始化 Trellis？" ;;
+    "AGENTS.md keeps every profile block for the project's AI to resolve")
+      UI_T="AGENTS.md 保留所有 profile 块，交由项目的 AI 决定" ;;
+    "next: edit AGENTS.md with real project guidance") UI_T="下一步：在 AGENTS.md 中写入真实的项目指引" ;;
+
+    *) _i18n_zh_pattern ;;
+  esac
+  return 0
+}
+
+# Messages with a value in them. Order matters where two patterns overlap: the
+# specific dry-run forms come before the generic one.
+_i18n_zh_pattern() {
+  local m=""
+
+  # --- frame and prompts -----------------------------------------------------
+  if _i18n_m '^done  (.*)$'; then UI_T="完成  ${BASH_REMATCH[1]}"; return; fi
+  if _i18n_m '^([0-9]+) of ([0-9]+) selected$'; then
+    UI_T="已选 ${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"; return
+  fi
+
+  # --- diagnostics card ------------------------------------------------------
+  if _i18n_m '^detached at (.*)$'; then UI_T="游离于 ${BASH_REMATCH[1]}"; return; fi
+  if _i18n_m '^Project v(.*) / CLI v(.*)$'; then
+    UI_T="项目 v${BASH_REMATCH[1]} / CLI v${BASH_REMATCH[2]}"; return
+  fi
+  if _i18n_m '^CLI v(.*) ready$'; then UI_T="CLI v${BASH_REMATCH[1]} 可用"; return; fi
+  if _i18n_m '^project tracked at v(.*)$'; then UI_T="项目记录为 v${BASH_REMATCH[1]}"; return; fi
+
+  # --- the dashboard menu ----------------------------------------------------
+  if _i18n_m '^v([^ ,]*), current$'; then UI_T="v${BASH_REMATCH[1]}，已是最新"; return; fi
+  # Sync's reveal: "<version>, <summary>", the version optionally "vA -> vB".
+  if _i18n_m '^(v[^ ,]*( -> v[^ ,]*)?), (.*)$'; then
+    m="${BASH_REMATCH[1]}"
+    if [[ "${BASH_REMATCH[3]}" == "everything up to date" ]]; then
+      UI_T="${m}，全部已是最新"; return
+    fi
+    if _i18n_counts "${BASH_REMATCH[3]}"; then UI_T="${m}，${UI_T}"; return; fi
+    UI_T="${_I18N_S}"
+  fi
+  if _i18n_counts "${_I18N_S}"; then return; fi
+  if _i18n_m '^applying template set: (.*)$'; then UI_T="应用模板集：${BASH_REMATCH[1]}"; return; fi
+
+  # --- template sync ---------------------------------------------------------
+  if _i18n_m '^(.*) exists — \[o\]verwrite / \[t\]emplate / \[s\]kip\?$'; then
+    UI_T="${BASH_REMATCH[1]} 已存在 — [o] 覆盖 / [t] 写 .template / [s] 跳过？"; return
+  fi
+  if _i18n_m '^skip (.*): not present in template dir$'; then
+    UI_T="跳过 ${BASH_REMATCH[1]}：模板目录中没有该文件"; return
+  fi
+  if _i18n_m '^skip (.*): (.*) exists \(kept\)$'; then
+    UI_T="跳过 ${BASH_REMATCH[1]}：${BASH_REMATCH[2]} 已存在（保留）"; return
+  fi
+  if _i18n_m '^skip (.*): not part of this template set \((.*)\)$'; then
+    UI_T="跳过 ${BASH_REMATCH[1]}：不属于本模板集（${BASH_REMATCH[2]}）"; return
+  fi
+  if _i18n_m '^skip existing (.*)$'; then UI_T="跳过已存在的 ${BASH_REMATCH[1]}"; return; fi
+  if _i18n_m '^refreshing (.*) \(left over from an unfinished merge\)$'; then
+    UI_T="刷新 ${BASH_REMATCH[1]}（上次合并未完成时留下的）"; return
+  fi
+  if _i18n_m '^copied (.*)$'; then UI_T="已复制 ${BASH_REMATCH[1]}"; return; fi
+  if _i18n_m '^created (.*)$'; then UI_T="已创建 ${BASH_REMATCH[1]}"; return; fi
+  if _i18n_m '^refreshed (.*) in (.*)$'; then
+    UI_T="已刷新 ${BASH_REMATCH[2]} 中的 ${BASH_REMATCH[1]}"; return
+  fi
+  if _i18n_m '^could not refresh (.*) in (.*)$'; then
+    UI_T="无法刷新 ${BASH_REMATCH[2]} 中的 ${BASH_REMATCH[1]}"; return
+  fi
+  if _i18n_m '^Template files \((.*)\)$'; then UI_T="模板文件（${BASH_REMATCH[1]}）"; return; fi
+  if _i18n_m '^already exists -> (.*)$'; then UI_T="已存在 -> ${BASH_REMATCH[1]}"; return; fi
+  if _i18n_m '^new -> creates (.*)$'; then UI_T="新增 -> 创建 ${BASH_REMATCH[1]}"; return; fi
+  if _i18n_m '^creates (.*)$'; then UI_T="创建 ${BASH_REMATCH[1]}"; return; fi
+  if _i18n_m '^([0-9]+) blocks?$'; then UI_T="${BASH_REMATCH[1]} 个块"; return; fi
+  if _i18n_m '^invalid selection: (.*)$'; then UI_T="无效的选择：${BASH_REMATCH[1]}"; return; fi
+  if _i18n_m '^([0-9]+) files? (was|were) written as <name>\.template beside an existing file\.$'; then
+    UI_T="已在 ${BASH_REMATCH[1]} 个现有文件旁写入 <name>.template。"; return
+  fi
+  if _i18n_m '^([0-9]+) of them are in the old pre-<TAG> format; copy the prompt$'; then
+    UI_T="其中 ${BASH_REMATCH[1]} 个是旧的 pre-<TAG> 格式；复制下面分隔线之间的提示词来转换它们："; return
+  fi
+
+  # --- toggles ---------------------------------------------------------------
+  if _i18n_m '^Archived the workflow file as (.*)$'; then UI_T="已将工作流文件归档为 ${BASH_REMATCH[1]}"; return; fi
+  if _i18n_m '^Archived the delegation subagent as (.*)$'; then UI_T="已将委派子 agent 归档为 ${BASH_REMATCH[1]}"; return; fi
+  if _i18n_m '^Archived the checklist as (.*)$'; then UI_T="已将测试清单归档为 ${BASH_REMATCH[1]}"; return; fi
+  if _i18n_m '^CC-Workflow template not found: (.*)$'; then UI_T="找不到 CC-Workflow 模板：${BASH_REMATCH[1]}"; return; fi
+  if _i18n_m '^CC-Workflow subagent template not found: (.*)$'; then UI_T="找不到 CC-Workflow 子 agent 模板：${BASH_REMATCH[1]}"; return; fi
+  if _i18n_m '^Delegation subagent template not found: (.*)$'; then UI_T="找不到委派子 agent 模板：${BASH_REMATCH[1]}"; return; fi
+  if _i18n_m '^(Test|test) checklist template not found: (.*)$'; then UI_T="找不到测试清单模板：${BASH_REMATCH[2]}"; return; fi
+  if _i18n_m '^Trellis integration block not found: (.*)$'; then UI_T="找不到 Trellis 集成块：${BASH_REMATCH[1]}"; return; fi
+  if _i18n_m '^CC-Workflow enabled \((.*) variant\) and referenced from CLAUDE\.md\.$'; then
+    UI_T="CC-Workflow 已启用（${BASH_REMATCH[1]} 版本），并已在 CLAUDE.md 中引用。"; return
+  fi
+
+  # --- Trellis ---------------------------------------------------------------
+  if _i18n_m '^Adding platform (.*) via Trellis\.\.\.$'; then UI_T="正在通过 Trellis 添加平台 ${BASH_REMATCH[1]}..."; return; fi
+  if _i18n_m '^Trellis is already at v(.*); an update would only re-scan$'; then
+    UI_T="Trellis 已是 v${BASH_REMATCH[1]}；更新只会重新扫描，并询问你改过的文件。"; return
+  fi
+  if _i18n_m '^Updating Trellis configuration in (.*)\.\.\.$'; then UI_T="正在更新 ${BASH_REMATCH[1]} 中的 Trellis 配置..."; return; fi
+  if _i18n_m '^installed Trellis: (.*)$'; then UI_T="已安装 Trellis：${BASH_REMATCH[1]}"; return; fi
+  if _i18n_m '^found Trellis: (.*)$'; then UI_T="找到 Trellis：${BASH_REMATCH[1]}"; return; fi
+  if _i18n_m '^initializing Trellis in (.*)$'; then UI_T="正在 ${BASH_REMATCH[1]} 中初始化 Trellis"; return; fi
+  if _i18n_m '^using Trellis developer name from \$DEVELOPER_NAME: (.*) \(override with --developer-name\)$'; then
+    UI_T="使用 \$DEVELOPER_NAME 中的 Trellis 开发者名称：${BASH_REMATCH[1]}（可用 --developer-name 覆盖）"; return
+  fi
+  if _i18n_m '^Node\.js (.*) found\. Trellis requires Node\.js 18\+\.$'; then
+    UI_T="找到 Node.js ${BASH_REMATCH[1]}。Trellis 需要 Node.js 18+。"; return
+  fi
+  if _i18n_m '^trellis did not create (.*); skipping deny-rule merge$'; then
+    UI_T="trellis 没有创建 ${BASH_REMATCH[1]}；跳过 deny 规则合并"; return
+  fi
+  if _i18n_m '^python3 not found; skipping deny-rule merge into (.*)$'; then
+    UI_T="未找到 python3；跳过向 ${BASH_REMATCH[1]} 合并 deny 规则"; return
+  fi
+  if _i18n_m '^merged secret-deny rules into (.*)$'; then UI_T="已将密钥 deny 规则合并进 ${BASH_REMATCH[1]}"; return; fi
+  if _i18n_m '^failed to merge deny rules into (.*)$'; then UI_T="向 ${BASH_REMATCH[1]} 合并 deny 规则失败"; return; fi
+
+  # --- git, state, scaffold --------------------------------------------------
+  if _i18n_m '^skip git init: (.*) is already a git repository$'; then
+    UI_T="跳过 git init：${BASH_REMATCH[1]} 已经是 git 仓库"; return
+  fi
+  if _i18n_m '^initializing git repository in (.*)$'; then UI_T="正在 ${BASH_REMATCH[1]} 中初始化 git 仓库"; return; fi
+  if _i18n_m "^note: (.*) is not a git repository; run 'git init' yourself if you want version control \(--apply does not\)$"; then
+    UI_T="提示：${BASH_REMATCH[1]} 不是 git 仓库；如需版本控制请自行运行 'git init'（--apply 不会运行）"; return
+  fi
+  if _i18n_m '^added (.*) to \.gitignore$'; then UI_T="已将 ${BASH_REMATCH[1]} 加入 .gitignore"; return; fi
+  if _i18n_m '^could not keep the handed-out template for (.*)$'; then UI_T="无法保留 ${BASH_REMATCH[1]} 的模板副本"; return; fi
+  if _i18n_m '^could not create (.*); skipping state record$'; then UI_T="无法创建 ${BASH_REMATCH[1]}；跳过状态记录"; return; fi
+  if _i18n_m '^template set: (.*)$'; then UI_T="模板集：${BASH_REMATCH[1]}"; return; fi
+  if _i18n_m "^AGENTS\.md assembled with the '(.*)' profile$"; then UI_T="AGENTS.md 已按 '${BASH_REMATCH[1]}' profile 组装"; return; fi
+  if _i18n_m '^(.*): template not found at (.*); writing a minimal fallback stub$'; then
+    UI_T="${BASH_REMATCH[1]}：在 ${BASH_REMATCH[2]} 找不到模板；写入最小占位内容"; return
+  fi
+  if _i18n_m '^template (common dir|blocks dir|blocks) not found(:| under) (.*); falling back to built-in placeholders$'; then
+    UI_T="找不到模板目录：${BASH_REMATCH[3]}；改用内置占位内容"; return
+  fi
+
+  # --- dry-run ---------------------------------------------------------------
+  if _i18n_m '^dry-run: copy (.*) -> (.*)$'; then UI_T="dry-run：复制 ${BASH_REMATCH[1]} -> ${BASH_REMATCH[2]}"; return; fi
+  if _i18n_m '^dry-run: mv (.*) -> (.*)$'; then UI_T="dry-run：移动 ${BASH_REMATCH[1]} -> ${BASH_REMATCH[2]}"; return; fi
+  if _i18n_m '^dry-run: refresh (.*) in (.*)$'; then UI_T="dry-run：刷新 ${BASH_REMATCH[2]} 中的 ${BASH_REMATCH[1]}"; return; fi
+  if _i18n_m '^dry-run: remove the CC-Workflow block from (.*)$'; then UI_T="dry-run：从 ${BASH_REMATCH[1]} 移除 CC-Workflow 块"; return; fi
+  if _i18n_m '^dry-run: reference the CC-Workflow block from (.*)$'; then UI_T="dry-run：在 ${BASH_REMATCH[1]} 中引用 CC-Workflow 块"; return; fi
+  if _i18n_m '^dry-run: remove (<INTEGRATION .*>) from (.*)$'; then UI_T="dry-run：从 ${BASH_REMATCH[2]} 移除 ${BASH_REMATCH[1]}"; return; fi
+  if _i18n_m '^dry-run: append (<INTEGRATION .*>) to (.*)$'; then UI_T="dry-run：向 ${BASH_REMATCH[2]} 追加 ${BASH_REMATCH[1]}"; return; fi
+  if _i18n_m '^dry-run: record ([0-9]+) content hashes in (.*)$'; then
+    UI_T="dry-run：在 ${BASH_REMATCH[2]} 中记录 ${BASH_REMATCH[1]} 个内容哈希"; return
+  fi
+  if _i18n_m '^dry-run: merge permissions\.deny from the template set into (.*)$'; then
+    UI_T="dry-run：把模板集的 permissions.deny 合并进 ${BASH_REMATCH[1]}"; return
+  fi
+  if _i18n_m '^dry-run: add (.*) to (.*)$'; then UI_T="dry-run：将 ${BASH_REMATCH[1]} 加入 ${BASH_REMATCH[2]}"; return; fi
+  if _i18n_m '^dry-run: write (.*)$'; then UI_T="dry-run：写入 ${BASH_REMATCH[1]}"; return; fi
+  if _i18n_m '^dry-run:(.*)$'; then UI_T="dry-run：${BASH_REMATCH[1]# }"; return; fi
+
+  # A flattened sync label, "<word> (<detail>)": translate the halves, but only
+  # when the word is one this catalog knows, so a platform list with its own
+  # parenthesised note is not mangled.
+  if _i18n_m '^(.+) \(([^()]*)\)$'; then
+    m="${BASH_REMATCH[1]}"
+    local detail="${BASH_REMATCH[2]}" word_zh=""
+    _i18n_zh "${m}"
+    if [[ "${UI_T}" != "${m}" ]]; then
+      word_zh="${UI_T}"
+      _i18n_zh "${detail}"
+      UI_T="${word_zh}（${UI_T}）"
+      return
+    fi
+    UI_T="${m} (${detail})"
+  fi
+  return 0
+}
