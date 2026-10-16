@@ -1117,8 +1117,12 @@ fi
 
 NEVER="${WORK}/trnever"
 mkdir -p "${NEVER}"
-has "a project that never had Trellis leads with init" \
+# Once the sync has nothing left, this submenu is the dashboard's default row,
+# so its own default must not be an init: Enter three times wrote a Trellis tree.
+hasnt "a project that never had Trellis does not default to init" \
   "$(trellis_ops "${NEVER}" no "" 'manage_trellis "${TR_PROJ}"')" "INIT"
+has "but init is still one choice away" \
+  "$(trellis_ops "${NEVER}" no init 'manage_trellis "${TR_PROJ}"')" "INIT"
 
 # Uninstall: uncommitted work outside git asks first, and no means nothing runs.
 if trellis_has_unprotected_data "${TRP}"; then

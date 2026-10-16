@@ -965,7 +965,7 @@ after_trellis_restored() {
 # Usage: manage_trellis_absent <project_dir>
 manage_trellis_absent() {
   local project_dir="$1"
-  local choice=""
+  local choice="" default_choice=""
   local -a actions=()
 
   if trellis_is_paused "${project_dir}"; then
@@ -979,8 +979,15 @@ manage_trellis_absent() {
   fi
   actions+=("$(prompt_opt back "Back")")
 
-  _prompt_split "${actions[0]}"
-  choice="$(ui_select "Trellis management" "${PROMPT_VALUE}" "${actions[@]}")"
+  # A recorded pause is the user's own Trellis waiting to come back, so restore
+  # may lead. A first init writes a whole tree into the project, and on the
+  # dashboard this row becomes the default the moment the sync has nothing
+  # left, so Enter-Enter-Enter must not land on it: the cursor starts on Back.
+  default_choice="back"
+  if trellis_is_paused "${project_dir}"; then
+    default_choice="restore"
+  fi
+  choice="$(ui_select "Trellis management" "${default_choice}" "${actions[@]}")"
   case "${choice}" in
     init)
       resolve_trellis_setup
