@@ -51,16 +51,56 @@ vibe-init my-project
 ```
 
 You will be asked, in order: the project folder (when the directory is not
-empty), whether to `git init` it (default **yes**), whether to install/initialize
-Trellis (default **no**), which profile the project is, and whether to include
-CC-Cowork-Workflow (default **no**). Every question is answered before anything
-is written; then the template set is assembled for those answers and copied in.
+empty), the repository layout (default **single**), whether to `git init` it
+(default **yes**), whether to install/initialize Trellis (default **no**), which
+profile the project is, whether to include CC-Cowork-Workflow (default **no**),
+and whether to include the test checklist (default **no**). Every question is
+answered before anything is written; then the template set is assembled for
+those answers and copied in.
 
 The profile picks the rule set `AGENTS.md` carries: `service` (backends, APIs,
 anything with a datastore or external callers) or `tool` (scripts, small CLIs,
 utilities). `ask` — the default under `-y` or without a terminal — keeps both,
 behind a one-time setup note telling the project's AI agent to confirm the
 profile with you and delete the rest.
+
+### A hub and its repositories
+
+Some projects are several independent git repositories planned together — a
+product split into an app, a library and a server, say. A **hub** is the
+documents-only repository that holds them: you and your agent plan there, and
+development is dispatched into each repository nested inside it.
+
+```sh
+mkdir MyHub && cd MyHub
+vibe-init --layout hub      # the hub itself
+vibe-init App               # a repository inside it — joins the hub on its own
+vibe-init Lib
+```
+
+A hub gets `AGENTS.md` with the hub rules (documents only, independent
+sub-repositories, where a document belongs, how work is dispatched) and no
+profile, and a `docs/` skeleton: `README.md`, `wiki/overview.md`, `insights/`,
+`tasks/` (one file per task, per repository), `next.md` (the dispatch sheet)
+and `handoff.md`. Trellis and the test checklist are not offered.
+
+A project created directly inside a hub becomes its **member**: its `AGENTS.md`
+gets the task-file rules (a task arrives as a read-only file from the hub), the
+hub's `.gitignore` gets its line and `docs/tasks/` its directory, and it gets a
+machine-local `.claude/settings.local.json` that keeps the hub's `CLAUDE.md` out
+of Claude Code sessions opened inside it — Claude Code loads `CLAUDE.md` from
+every directory above the one it starts in, and the hub's rules ("documents
+only") would contradict the member's. `--layout single` opts out.
+
+An existing hub or member adopts its layout with `vibe-init --apply --layout hub`
+or `--apply --layout member`. Adopting never rewrites an existing `docs/`; it
+adds the layout block to `AGENTS.md`, and for a hub names any nested repository
+its git does not ignore yet. A plain `--apply` never adopts on its own.
+
+A folder that only groups unrelated repositories — where no agent is ever
+started — is not a layout at all: create projects inside it as usual.
+`--apply` in such a folder is refused, so agent rules are not planted where
+nobody reads them.
 
 ### Seed an existing project
 
@@ -246,6 +286,7 @@ upgrade state containing symlinks are rejected to prevent redirected writes.
 | --- | --- |
 | `PROJECT` | Bare positional project name (equivalent to `--name`); only used when the current directory is not empty. Cannot be combined with `--name` or `--apply`. |
 | `--name NAME` | Project folder name when the current directory is not empty. |
+| `--layout single\|hub` | Repository layout for a new project (default: `single`). `hub` is a documents-only repository that plans the repositories nested inside it; a project created inside a hub joins it on its own. With `--apply`, `--layout hub\|member` adopts that layout for an existing project. |
 | `--git yes\|no` | Whether to run `git init` in the new project (default: yes). Skipped if already a repo; ignored with `--apply`. |
 | `--profile service\|tool\|ask` | Profile for a new project: `service` or `tool` assembles `AGENTS.md` with just that rule set; `ask` (the `-y` / non-TTY default) keeps all of them for the project's AI agent to resolve. Not valid with `--apply`. |
 | `--trellis yes\|no` | Whether to install/initialize Trellis. |
@@ -285,6 +326,8 @@ Chinese.
 | `.claude/settings.json` | Denies agents from reading secrets (`.env*`, `secrets/**`, `*.pem`/`*.key`/`*.p12`/`*.pfx`). |
 | `Test/templates-test-checklist.html` | Optional (`--test-checklist yes`): a standalone manual test checklist page. |
 | `.vibe-init/` | Portable `manifest`, `policy`, and upstream `base/` objects. Local `pending/`, `backups/`, and `lock/` are ignored. |
+| `docs/` | Hub only: the shared-docs skeleton, written once and then yours. |
+| `.claude/settings.local.json` | Hub member only, machine-local: excludes the hub's `CLAUDE.md` from sessions inside the member. |
 
 ## Templates
 
@@ -293,7 +336,9 @@ There is one set of templates, assembled per run rather than copied as-is:
 - **`templates/blocks/`** — the `<TAG>` blocks `AGENTS.md` is built from:
   `metadata`, `product`, `project_phase`, `core_rules`, then the profile
   (`profiles/`, plus `profile_setup` when the profile is `ask`), then any
-  integrations (`integrations/`, e.g. Trellis). `features/cc-workflow/` holds
+  integrations (`integrations/`, e.g. Trellis). `layouts/` holds the hub and
+  member blocks, which follow the core rules, and the hub's `docs/` skeleton.
+  `features/cc-workflow/` holds
   `CC-Cowork-Workflow.md` — a plain and a Trellis variant — the `codex-run`
   subagent it delegates through, and the block it adds to `CLAUDE.md`;
   `features/test-checklist/` holds the manual test page.
@@ -317,6 +362,10 @@ rather than overwriting it.
   file where a content hash proves the text is the tool's own and untouched;
   anything you changed is left for you, with a `<name>.template` copy beside it.
 - `--dry-run` shows exactly what would happen without changing anything.
+- A project writes outside its own directory in one case only: a new or joining
+  hub member appends its line to the hub's `.gitignore` and creates its
+  `docs/tasks/` directory there. Nothing existing in the hub is edited, and the
+  hub is never committed for you.
 - The seeded `.claude/settings.json` blocks agents from reading common secret
   files.
 
@@ -328,7 +377,7 @@ rather than overwriting it.
 
 Runs all three suites. `test/dry-run.sh` drives the CLI and asserts on what it prints
 — scaffold, `--apply` file selection and `--on-exists`, the sync verdicts, flag
-guards, and Trellis init. `test/units.sh` exercises the libraries directly —
+guards, Trellis init, and the hub, member and category-folder layouts. `test/units.sh` exercises the libraries directly —
 block assembly and editing, the state manifest, the merge verdicts, the
 dashboard's menu order and reveals, the Trellis update gate, and the
 non-interactive contracts of the prompts. Exit code 0 means every assertion

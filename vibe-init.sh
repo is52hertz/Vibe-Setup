@@ -232,6 +232,12 @@ Behavior:
   - Existing project files are skipped, not overwritten.
   - Asks whether to run git init in the new project (default yes); skipped when
     the project is already a git repository. Not done in --apply mode.
+  - A project created directly inside a hub becomes its member: its line is
+    appended to the hub's .gitignore, docs/tasks/<name>/ is created there, and
+    a machine-local .claude/settings.local.json keeps the hub's CLAUDE.md out
+    of sessions inside it. --layout single opts out.
+  - --apply refuses a folder that only groups repositories (two or more nested
+    git repositories and no history of its own).
   - With --apply: safely sync the current project; --files selects a subset.
     Local customizations stay in place. Conflicts freeze a .template proposal
     until --resolve explicitly acknowledges it. --on-exists is an explicit
