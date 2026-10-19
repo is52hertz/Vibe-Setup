@@ -149,6 +149,18 @@ _i18n_zh() {
     "Platforms") UI_T="平台" ;;
     "Test checklist") UI_T="测试清单" ;;
     "Format upgrade") UI_T="格式升级" ;;
+    "Layout") UI_T="布局" ;;
+    "single") UI_T="单一仓库" ;;
+    "hub") UI_T="hub" ;;
+    "member") UI_T="hub 成员" ;;
+    "inside a hub; --apply --layout member joins it") UI_T="位于 hub 之内；用 --apply --layout member 加入" ;;
+    "This folder looks like a category of independent repositories, not a project.")
+      UI_T="这个文件夹看起来是一组独立仓库的分类目录，而不是项目。请改为进入其中某个仓库运行 vibe-init --apply。" ;;
+    "Run vibe-init --apply inside one of them instead.") UI_T_SKIP=1 ;;
+    "Sync this folder as a project anyway?") UI_T="仍要把这个文件夹当作项目同步？" ;;
+    "refusing to sync a category folder") UI_T="拒绝同步分类目录" ;;
+    "no AGENTS.md here; the layout is recorded, but its block is not added")
+      UI_T="这里没有 AGENTS.md；已记录布局，但没有添加对应的块" ;;
     "Not initialized") UI_T="未初始化" ;;
     "Not configured") UI_T="未配置" ;;
     "None") UI_T="无" ;;
@@ -409,6 +421,16 @@ _i18n_zh() {
     "AGENTS.md keeps every profile block for the project's AI to resolve")
       UI_T="AGENTS.md 保留所有 profile 块，交由项目的 AI 决定" ;;
     "next: edit AGENTS.md with real project guidance") UI_T="下一步：在 AGENTS.md 中写入真实的项目指引" ;;
+    "the hub's .gitignore and docs/tasks/ changed; commit them in the hub")
+      UI_T="hub 的 .gitignore 和 docs/tasks/ 已更改；请在 hub 中提交" ;;
+    "What kind of repository is this?") UI_T="这是什么类型的仓库？" ;;
+    "Single repository") UI_T="单一仓库" ;;
+    "one project, one git repository") UI_T="一个项目，一个 git 仓库" ;;
+    "Hub") UI_T="Hub" ;;
+    "documents only; plans the repositories nested inside it") UI_T="只放文档；规划嵌在其中的各个仓库" ;;
+    "AGENTS.md assembled for a hub: the hub rules, no profile") UI_T="AGENTS.md 已按 hub 组装：带 hub 规则，不带 profile" ;;
+    "next: describe the project in AGENTS.md and docs/wiki/overview.md")
+      UI_T="下一步：在 AGENTS.md 和 docs/wiki/overview.md 中描述这个项目" ;;
 
     *) _i18n_zh_pattern ;;
   esac
@@ -427,6 +449,11 @@ _i18n_zh_pattern() {
   fi
 
   # --- diagnostics card ------------------------------------------------------
+  if _i18n_m '^([0-9]+) nested repositories not ignored$'; then UI_T="${BASH_REMATCH[1]} 个嵌套仓库未被忽略"; return; fi
+  if _i18n_m '^of (/.*)$'; then UI_T="属于 ${BASH_REMATCH[1]}"; return; fi
+  if _i18n_m "^not ignored by the hub's git: (.*) \(add (.*) to \.gitignore\)$"; then
+    UI_T="hub 的 git 没有忽略 ${BASH_REMATCH[1]}（请把 ${BASH_REMATCH[2]} 加入 .gitignore）"; return
+  fi
   if _i18n_m '^detached at (.*)$'; then UI_T="游离于 ${BASH_REMATCH[1]}"; return; fi
   if _i18n_m '^Project v(.*) / CLI v(.*)$'; then
     UI_T="项目 v${BASH_REMATCH[1]} / CLI v${BASH_REMATCH[2]}"; return
@@ -578,6 +605,13 @@ _i18n_zh_pattern() {
     UI_T="提示：${BASH_REMATCH[1]} 不是 git 仓库；如需版本控制请自行运行 'git init'（--apply 不会运行）"; return
   fi
   if _i18n_m '^added (.*) to \.gitignore$'; then UI_T="已将 ${BASH_REMATCH[1]} 加入 .gitignore"; return; fi
+  if _i18n_m '^added (.*) to (.*)$'; then UI_T="已将 ${BASH_REMATCH[1]} 加入 ${BASH_REMATCH[2]}"; return; fi
+  if _i18n_m '^inside the hub (.*): setting this up as one of its repositories$'; then
+    UI_T="位于 hub ${BASH_REMATCH[1]} 之内：按它的成员仓库初始化"; return
+  fi
+  if _i18n_m '^(.*) exists without the hub exclusion; add this entry by hand:$'; then
+    UI_T="${BASH_REMATCH[1]} 已存在，但没有排除 hub 的规则；请手动加入这一项："; return
+  fi
   if _i18n_m '^could not keep the handed-out template for (.*)$'; then UI_T="无法保留 ${BASH_REMATCH[1]} 的模板副本"; return; fi
   if _i18n_m '^could not create (.*); skipping state record$'; then UI_T="无法创建 ${BASH_REMATCH[1]}；跳过状态记录"; return; fi
   if _i18n_m '^template set: (.*)$'; then UI_T="模板集：${BASH_REMATCH[1]}"; return; fi

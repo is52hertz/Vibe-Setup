@@ -414,7 +414,7 @@ if [[ -f "${d}/.vibe-init/manifest" ]]; then
 else
   ko "a scaffold records its state" ".vibe-init/manifest was not written"
 fi
-if grep -qxF "$(printf 'version\t1.2.0')" "${d}/.vibe-init/manifest"; then
+if grep -qxF "$(printf 'version\t1.3.0')" "${d}/.vibe-init/manifest"; then
   ok "the manifest stamps the tool version"
 else
   ko "the manifest stamps the tool version" "$(cat "${d}/.vibe-init/manifest" 2>/dev/null | head -5)"
@@ -459,7 +459,7 @@ if [[ -z "$(find "${d}" -name '*.template' -print -quit)" ]]; then
 else
   ko "an unchanged project leaves no .template on disk" "$(find "${d}" -name '*.template')"
 fi
-has "diagnostics report the tool and the project version" "v1.2.0 (last tool v1.2.0; 0 pending review(s))"
+has "diagnostics report the tool and the project version" "v1.3.0 (last tool v1.3.0; 0 pending review(s))"
 hasre "diagnostics report CLAUDE.md's format"             "CLAUDE.md +.*Modern"
 
 d="$(sandbox)"
@@ -591,6 +591,140 @@ has   "after the agent's round the project is settled" "Everything is up to date
 hasnt "and nothing is handed out again"                ".template"
 vi "${d}" --apply -y
 has   "and it stays settled"                           "Everything is up to date"
+
+# --- --layout hub scaffolds a documents-only hub ------------------------------
+d="$(sandbox)"
+vi "${d}" --layout hub -y
+rc_is "--layout hub scaffolds cleanly" 0
+if grep -qF '<LAYOUT id="hub">' "${d}/AGENTS.md" && ! grep -qF '<PROFILE' "${d}/AGENTS.md"; then
+  ok "a hub AGENTS.md carries the hub rules and no profile"
+else
+  ko "a hub AGENTS.md carries the hub rules and no profile" "$(grep -oE '^<[A-Z_]+[^>]*>' "${d}/AGENTS.md" | tr '\n' ' ')"
+fi
+if [[ -f "${d}/docs/README.md" && -f "${d}/docs/tasks/README.md" && -f "${d}/docs/next.md" \
+      && -f "${d}/docs/handoff.md" && -f "${d}/docs/wiki/overview.md" ]]; then
+  ok "a hub gets the docs skeleton"
+else
+  ko "a hub gets the docs skeleton" "$(cd "${d}" && find docs -type f 2>/dev/null | tr '\n' ' ')"
+fi
+[[ -d "${d}/.git" ]] && ok "a hub is a git repository" || ko "a hub is a git repository" "no .git"
+if grep -qF "$(printf 'layout\thub')" "${d}/.vibe-init/manifest"; then
+  ok "the manifest records the hub layout"
+else
+  ko "the manifest records the hub layout" "$(grep '^layout' "${d}/.vibe-init/manifest")"
+fi
+hasnt "a hub is not offered the test checklist" "Test/templates-test-checklist.html"
+
+d="$(sandbox)"
+vi "${d}" -y
+if grep -qF "$(printf 'layout\tsingle')" "${d}/.vibe-init/manifest" && [[ ! -e "${d}/docs" ]]; then
+  ok "the default layout is single, with no docs skeleton"
+else
+  ko "the default layout is single, with no docs skeleton" "$(grep '^layout' "${d}/.vibe-init/manifest")"
+fi
+
+d="$(sandbox)"
+vi "${d}" --layout hub --profile tool -y
+rc_is "--layout hub refuses a profile" 1
+vi "${d}" --layout hub --trellis yes -y
+rc_is "--layout hub refuses Trellis" 1
+vi "${d}" --layout nested -y
+rc_is "an unknown layout is refused" 1
+has   "and named" "--layout must be single or hub"
+
+# --- a project created inside a hub becomes one of its members ---------------
+hub="$(sandbox)"
+vi "${hub}" --layout hub -y
+cp "${hub}/.gitignore" "${hub}/gitignore.before"
+
+vi "${hub}" Beta -y --dry-run
+if cmp -s "${hub}/.gitignore" "${hub}/gitignore.before" && [[ ! -e "${hub}/docs/tasks/beta" ]]; then
+  ok "a dry-run member leaves the hub untouched"
+else
+  ko "a dry-run member leaves the hub untouched" "hub .gitignore or docs/tasks/ changed"
+fi
+has "and says what it would add to the hub" "dry-run: add /Beta/ to ${hub}/.gitignore"
+
+vi "${hub}" Alpha -y
+rc_is "a member scaffolds cleanly inside a hub" 0
+has   "the run says it is inside a hub" "inside the hub ${hub}: setting this up as one of its repositories"
+if grep -qF '<LAYOUT id="member">' "${hub}/Alpha/AGENTS.md" && grep -qF '<PROFILE' "${hub}/Alpha/AGENTS.md"; then
+  ok "a member AGENTS.md carries the task-file rules and keeps its profiles"
+else
+  ko "a member AGENTS.md carries the task-file rules and keeps its profiles" "missing block"
+fi
+if grep -qxF '/Alpha/' "${hub}/.gitignore"; then
+  ok "the hub ignores its new member"
+else
+  ko "the hub ignores its new member" "$(cat "${hub}/.gitignore")"
+fi
+[[ -d "${hub}/docs/tasks/alpha/done" ]] && ok "the hub gets a task directory for the member" \
+  || ko "the hub gets a task directory for the member" "no docs/tasks/alpha/done"
+if grep -qF '"**/'"$(basename "${hub}")"'/CLAUDE.md"' "${hub}/Alpha/.claude/settings.local.json" 2>/dev/null; then
+  ok "the member is shielded from the hub's CLAUDE.md"
+else
+  ko "the member is shielded from the hub's CLAUDE.md" "no claudeMdExcludes entry"
+fi
+if grep -qF "$(printf 'layout\tmember')" "${hub}/Alpha/.vibe-init/manifest"; then
+  ok "the member's manifest records it as a member"
+else
+  ko "the member's manifest records it as a member" "$(grep '^layout' "${hub}/Alpha/.vibe-init/manifest")"
+fi
+
+vi "${hub}" Gamma --layout single -y
+if ! grep -qF '<LAYOUT' "${hub}/Gamma/AGENTS.md" && ! grep -qxF '/Gamma/' "${hub}/.gitignore"; then
+  ok "--layout single inside a hub opts out of membership"
+else
+  ko "--layout single inside a hub opts out of membership" "registered anyway"
+fi
+
+# --- --apply in a category folder is refused -------------------------------
+# Unrelated repositories grouped under one folder, where no agent is started:
+# syncing it would plant agent rules where nobody reads them.
+d="$(sandbox)"
+mkdir -p "${d}/one/.git" "${d}/two/.git"
+vi "${d}" --apply -y
+rc_is "--apply in a category folder is refused" 1
+has   "and says where to run it instead" "Run vibe-init --apply inside one of them instead."
+[[ ! -e "${d}/AGENTS.md" && ! -e "${d}/.vibe-init" ]] && ok "and writes nothing there" \
+  || ko "and writes nothing there" "$(ls -A "${d}" | tr '\n' ' ')"
+
+# --- an existing project adopts the hub layout --------------------------------
+d="$(sandbox)"
+vi "${d}" -y
+mkdir -p "${d}/Inner/.git"
+vi "${d}" --apply -y --layout hub
+rc_is "an existing project adopts the hub layout" 0
+grep -qF '<LAYOUT id="hub">' "${d}/AGENTS.md" && ok "adopting adds the hub block" \
+  || ko "adopting adds the hub block" "no LAYOUT block"
+has "a nested repository the hub's git would track is named" "not ignored by the hub's git: Inner/"
+[[ ! -e "${d}/docs" ]] && ok "adopting writes no docs skeleton over the project" \
+  || ko "adopting writes no docs skeleton over the project" "docs/ created"
+vi "${d}" --apply -y
+has "the card shows the layout and what it still needs" "1 nested repositories not ignored"
+
+vi "${d}" --apply -y --layout single
+rc_is "--apply does not take --layout single" 1
+vi "${d}" --apply -y --layout member
+rc_is "--layout member needs a hub above" 1
+
+# --- an existing project inside a hub joins it --------------------------------
+# Gamma was created inside the hub with --layout single. Give it a frozen
+# review first: a file under review is skipped by the sync, which must not keep
+# an explicit adoption from adding its block.
+t="$(template_copy)"
+inject_above "${hub}/Gamma/AGENTS.md" "</CORE_RULES>" "- **MY OWN RULE**: local."
+inject_above "${t}/blocks/core_rules.md" "</CORE_RULES>" "- **LATER RULE**: upstream."
+vi "${hub}/Gamma" --apply -y --template-dir "${t}"
+has "a plain apply inside a hub suggests joining it" "inside a hub; --apply --layout member joins it"
+vi "${hub}/Gamma" --apply -y --layout member --template-dir "${t}"
+rc_is "an existing project joins its hub" 0
+grep -qF '<LAYOUT id="member">' "${hub}/Gamma/AGENTS.md" && ok "joining adds the member block despite a frozen review" \
+  || ko "joining adds the member block despite a frozen review" "no LAYOUT block"
+grep -qxF '/Gamma/' "${hub}/.gitignore" && ok "joining registers the member in the hub" \
+  || ko "joining registers the member in the hub" "$(cat "${hub}/.gitignore")"
+grep -qF "$(printf 'layout\tmember')" "${hub}/Gamma/.vibe-init/manifest" && ok "and records it as a member" \
+  || ko "and records it as a member" "$(grep '^layout' "${hub}/Gamma/.vibe-init/manifest")"
 
 # --- --apply --cc-workflow yes wires CLAUDE.md, not just the documents -------
 # A missing optional block is normally an opt-out the sync must respect, so it

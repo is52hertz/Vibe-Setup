@@ -21,7 +21,7 @@ TEMPLATE_ROOT="${SCRIPT_DIR}/templates"
 # Recorded into every scaffolded project (.vibe-init/manifest) and shown in the
 # apply diagnostics, so a project can say which vibe-init last touched it.
 # Bump the minor for a template or behavior change projects should pick up.
-VIBE_INIT_VERSION="1.2.0"
+VIBE_INIT_VERSION="1.3.0"
 
 ASSUME_DEFAULTS=0
 DRY_RUN=0
@@ -42,6 +42,14 @@ CC_WORKFLOW_ENABLED=0
 # apply mode an unset choice follows what the target project already has.
 TEST_CHECKLIST_CHOICE=""
 TEST_CHECKLIST_ENABLED=0
+# Repository layout for a NEW project: single | hub. Empty CHOICE means "ask"
+# (default single); --layout sets it non-interactively. A hub is a documents-only
+# repository that plans and coordinates the git repositories nested inside it.
+LAYOUT_CHOICE=""
+LAYOUT="single"
+# Set when the new project sits directly inside a hub: it becomes a member,
+# registered in the hub and shielded from the hub's own rules.
+HUB_DIR=""
 
 # Source helper modules
 [[ -f "${SCRIPT_DIR}/lib/ui.sh" ]] && . "${SCRIPT_DIR}/lib/ui.sh"
@@ -50,6 +58,7 @@ TEST_CHECKLIST_ENABLED=0
 [[ -f "${SCRIPT_DIR}/lib/state.sh" ]] && . "${SCRIPT_DIR}/lib/state.sh"
 [[ -f "${SCRIPT_DIR}/lib/sync.sh" ]] && . "${SCRIPT_DIR}/lib/sync.sh"
 [[ -f "${SCRIPT_DIR}/lib/upgrade.sh" ]] && . "${SCRIPT_DIR}/lib/upgrade.sh"
+[[ -f "${SCRIPT_DIR}/lib/layout.sh" ]] && . "${SCRIPT_DIR}/lib/layout.sh"
 [[ -f "${SCRIPT_DIR}/lib/trellis.sh" ]] && . "${SCRIPT_DIR}/lib/trellis.sh"
 # Optional comma/space separated subset of TEMPLATE_FILES to copy in apply mode.
 # Empty means "ask interactively" (or "all" under -y / non-TTY). Requires --apply.
@@ -165,6 +174,11 @@ Options:
   --name NAME              Project folder name when current directory is not empty.
                            Equivalent to the bare PROJECT argument, but they cannot
                            be used together.
+  --layout single|hub      Repository layout for a NEW project (default: single). A hub is
+                           a documents-only repository that plans and coordinates the git
+                           repositories nested inside it: AGENTS.md gets the hub rules and
+                           no profile, docs/ gets a shared-docs skeleton, and Trellis and
+                           the test checklist are not offered.
   --git yes|no             Whether to run git init in the new project (default: yes).
                            Ignored with --apply. Skipped if already a git repository.
   --profile MODE           Project profile for a NEW project: service | tool | ask.
@@ -218,6 +232,12 @@ Behavior:
   - Existing project files are skipped, not overwritten.
   - Asks whether to run git init in the new project (default yes); skipped when
     the project is already a git repository. Not done in --apply mode.
+  - A project created directly inside a hub becomes its member: its line is
+    appended to the hub's .gitignore, docs/tasks/<name>/ is created there, and
+    a machine-local .claude/settings.local.json keeps the hub's CLAUDE.md out
+    of sessions inside it. --layout single opts out.
+  - --apply refuses a folder that only groups repositories (two or more nested
+    git repositories and no history of its own).
   - With --apply: safely sync the current project; --files selects a subset.
     Local customizations stay in place. Conflicts freeze a .template proposal
     until --resolve explicitly acknowledges it. --on-exists is an explicit
@@ -293,6 +313,16 @@ while [[ $# -gt 0 ]]; do
     --test-checklist=*)
       TEST_CHECKLIST_CHOICE="${1#*=}"
       require_arg "--test-checklist" "${TEST_CHECKLIST_CHOICE}"
+      shift
+      ;;
+    --layout)
+      require_arg "$1" "${2:-}"
+      LAYOUT_CHOICE="$2"
+      shift 2
+      ;;
+    --layout=*)
+      LAYOUT_CHOICE="${1#*=}"
+      require_arg "--layout" "${LAYOUT_CHOICE}"
       shift
       ;;
     --git)
@@ -935,6 +965,7 @@ prepare_template_set() {
   local integrations="$2"
   local enable_cc="$3"
   local enable_checklist="${4:-0}"
+  local layout="${5:-single}"
   local tmp_root="${TMPDIR:-/tmp}"
 
   if [[ ! -d "${TEMPLATE_ROOT}/blocks" ]]; then
@@ -948,9 +979,12 @@ prepare_template_set() {
     || die "could not create a staging directory for the template set"
 
   TEMPLATE_DIR="${TEMPLATE_STAGE_DIR}"
-  materialize_template_set "${TEMPLATE_DIR}" "${profile}" "${integrations}" "${enable_cc}" "${enable_checklist}"
+  materialize_template_set "${TEMPLATE_DIR}" "${profile}" "${integrations}" "${enable_cc}" "${enable_checklist}" "${layout}"
 
   TEMPLATE_SET_LABEL="profile=${profile}"
+  if [[ "${layout}" != single ]]; then
+    TEMPLATE_SET_LABEL="layout=${layout}, ${TEMPLATE_SET_LABEL}"
+  fi
   if [[ -n "${integrations}" ]]; then
     TEMPLATE_SET_LABEL="${TEMPLATE_SET_LABEL}, integrations=${integrations}"
   fi
@@ -998,6 +1032,27 @@ maybe_init_git() {
   # -q because we have already said what is happening: git's own line would be
   # the one thing in the run that does not hang off the gutter.
   run_in_dir "${project_dir}" git init -q
+}
+
+# Resolve the repository layout of a new project, and echo it. --layout wins;
+# otherwise -y / non-TTY default to single and an interactive run is prompted.
+resolve_layout() {
+  local choice=""
+  local -a options=()
+
+  if [[ -n "${LAYOUT_CHOICE}" ]]; then
+    printf '%s\n' "$(printf '%s' "${LAYOUT_CHOICE}" | tr '[:upper:]' '[:lower:]')"
+    return
+  fi
+  if [[ "${ASSUME_DEFAULTS}" -eq 1 || ! -t 0 ]]; then
+    printf 'single\n'
+    return
+  fi
+
+  options+=("$(prompt_opt single "Single repository" "one project, one git repository")")
+  options+=("$(prompt_opt hub "Hub" "documents only; plans the repositories nested inside it")")
+  choice="$(ui_select "What kind of repository is this?" "single" "${options[@]}")"
+  printf '%s\n' "${choice}"
 }
 
 # Resolve which profile the scaffolded AGENTS.md is assembled with, and echo it.
@@ -1104,6 +1159,13 @@ write_project_placeholders() {
   if [[ "${TEST_CHECKLIST_ENABLED}" -eq 1 ]]; then
     copy_optional_template "Test/templates-test-checklist.html" "${project_dir}/Test/templates-test-checklist.html"
   fi
+  # A hub's docs/ skeleton is seed content: copied once, then the project's own.
+  if [[ "${LAYOUT}" == hub && -d "${TEMPLATE_DIR}/docs" ]]; then
+    local rel=""
+    while IFS= read -r rel; do
+      copy_optional_template "${rel}" "${project_dir}/${rel}"
+    done < <(cd "${TEMPLATE_DIR}" && find docs -type f | LC_ALL=C sort)
+  fi
 }
 
 # Record what the scaffold just wrote into .vibe-init/manifest. This is the whole
@@ -1116,6 +1178,7 @@ record_scaffold_state() {
   local rel="" source_of_truth="" file_hash=""
 
   STATE_SET_PROFILE="${profile}"
+  STATE_SET_LAYOUT="${LAYOUT}"
   STATE_SET_INTEGRATIONS="${TEMPLATE_INTEGRATIONS}"
   if [[ "${CC_WORKFLOW_ENABLED}" -eq 1 ]]; then
     STATE_SET_CC="on"
@@ -1192,6 +1255,18 @@ run_apply_mode() {
   local apply_lib="${SCRIPT_DIR}/lib/apply.sh"
 
   target_dir="$(pwd -P)"
+
+  # A folder that only groups independent repositories is never a project:
+  # syncing it would plant agent rules where no agent is ever started.
+  if [[ -z "${LAYOUT_CHOICE}" ]] && layout_looks_like_category "${target_dir}"; then
+    warn "This folder looks like a category of independent repositories, not a project."
+    warn "Run vibe-init --apply inside one of them instead."
+    if [[ "${ASSUME_DEFAULTS}" -eq 1 || ! -t 0 ]]; then
+      die "refusing to sync a category folder"
+    fi
+    ask_yes_no "Sync this folder as a project anyway?" "no" || exit 0
+  fi
+
   upgrade_safe_paths "${target_dir}" || die "unsafe upgrade paths"
   state_check_schema "${target_dir}" || die "cannot read project state"
   if [[ "${UPGRADE_ACTION}" != pending ]]; then upgrade_lock "${target_dir}" || die "upgrade is locked"; fi
@@ -1221,9 +1296,23 @@ run_apply_mode() {
     TEST_CHECKLIST_ENABLED="$(resolve_test_checklist)"
   fi
 
+  # The layout the project recorded, unless --layout adopts one now. Adopting
+  # adds the layout block directly, like a feature toggle; a member is also
+  # registered in its hub and shielded from it.
+  HUB_DIR="$(layout_hub_of "${target_dir}")"
+  LAYOUT="$(state_get "${target_dir}" layout)"
+  [[ -n "${LAYOUT}" ]] || LAYOUT="single"
+  if [[ -n "${LAYOUT_CHOICE}" ]]; then
+    if [[ "${LAYOUT_CHOICE}" == member && -z "${HUB_DIR}" ]]; then
+      die "--layout member needs a hub directly above this project"
+    fi
+    LAYOUT="${LAYOUT_CHOICE}"
+    STATE_SET_LAYOUT="${LAYOUT}"
+  fi
+
   # Apply mode never prunes profiles: the project's AI resolves that from the
   # codebase, which is also why --profile is rejected with --apply.
-  prepare_template_set "ask" "${TEMPLATE_INTEGRATIONS}" "${CC_WORKFLOW_ENABLED}" "${TEST_CHECKLIST_ENABLED}"
+  prepare_template_set "ask" "${TEMPLATE_INTEGRATIONS}" "${CC_WORKFLOW_ENABLED}" "${TEST_CHECKLIST_ENABLED}" "${LAYOUT}"
 
   ui_intro "vibe-init" "project orchestrator"
 
@@ -1259,6 +1348,15 @@ run_apply_mode() {
         ;;
     esac
   else
+    if [[ -n "${LAYOUT_CHOICE}" ]]; then
+      layout_adopt "${target_dir}" "${LAYOUT_CHOICE}"
+    fi
+    if [[ "${LAYOUT_CHOICE}" == member ]]; then
+      layout_register_member "${HUB_DIR}" "${target_dir}"
+      layout_shield_member "${HUB_DIR}" "${target_dir}"
+    elif [[ "${LAYOUT_CHOICE}" == hub ]]; then
+      layout_report_unignored "${target_dir}"
+    fi
     orchestrator_dashboard "${target_dir}"
   fi
 
@@ -1273,7 +1371,7 @@ main() {
 
   if [[ -n "${UPGRADE_ACTION}" ]]; then
     [[ "${APPLY_MODE}" -eq 1 ]] || die "upgrade actions require --apply"
-    [[ -z "${ON_EXISTS}${APPLY_FILES}${CC_WORKFLOW_CHOICE}${TEST_CHECKLIST_CHOICE}" ]] || die "upgrade actions cannot be combined with sync options"
+    [[ -z "${ON_EXISTS}${APPLY_FILES}${CC_WORKFLOW_CHOICE}${TEST_CHECKLIST_CHOICE}${LAYOUT_CHOICE}" ]] || die "upgrade actions cannot be combined with sync options"
     if [[ "${UPGRADE_ACTION}" == resolve ]]; then
       [[ -n "${UPGRADE_VALUE}" && -n "${UPGRADE_EXPECT}" && -n "${UPGRADE_RESOLUTION}" ]] || die "--resolve requires --expect and --resolution"
     fi
@@ -1312,6 +1410,28 @@ main() {
     normalize_yes_no "${TEST_CHECKLIST_CHOICE}" >/dev/null || die "--test-checklist must be yes or no"
   fi
 
+  if [[ -n "${LAYOUT_CHOICE}" ]]; then
+    LAYOUT_CHOICE="$(printf '%s' "${LAYOUT_CHOICE}" | tr '[:upper:]' '[:lower:]')"
+    if [[ "${APPLY_MODE}" -eq 1 ]]; then
+      # An existing project adopts a layout; leaving one is the user's edit.
+      case "${LAYOUT_CHOICE}" in
+        hub|member) ;;
+        *) die "with --apply, --layout takes hub or member (to adopt that layout)" ;;
+      esac
+    else
+      case "${LAYOUT_CHOICE}" in
+        single) ;;
+        hub)
+          # A hub holds documents: these flags ask for things it never gets.
+          [[ -z "${PROFILE}" ]] || die "--profile does not apply to a hub (it has no profile)"
+          [[ "$(normalize_yes_no "${TRELLIS_CHOICE:-no}" 2>/dev/null)" != yes ]] || die "--trellis yes does not apply to a hub"
+          [[ "$(normalize_yes_no "${TEST_CHECKLIST_CHOICE:-no}" 2>/dev/null)" != yes ]] || die "--test-checklist yes does not apply to a hub"
+          ;;
+        *) die "--layout must be single or hub" ;;
+      esac
+    fi
+  fi
+
   if [[ "${PROJECT_NAME_POSITIONAL}" -eq 1 && "${APPLY_MODE}" -eq 1 ]]; then
     die "the <PROJECT> name argument is not valid with --apply (--apply targets the current directory)"
   fi
@@ -1330,12 +1450,25 @@ main() {
 
   project_dir="$(choose_project_dir)"
 
+  # A project created directly inside a hub is one of its repositories, unless
+  # --layout says otherwise.
+  HUB_DIR="$(layout_hub_of "${project_dir}")"
+  if [[ -n "${HUB_DIR}" && -z "${LAYOUT_CHOICE}" ]]; then
+    LAYOUT="member"
+    info "inside the hub ${HUB_DIR}: setting this up as one of its repositories"
+  else
+    LAYOUT="$(resolve_layout)"
+  fi
+
   maybe_init_git "${project_dir}"
 
   # Trellis first among the content questions: it is the heaviest choice, it can
   # install software, and it asks its own follow-ups — all of which belong in one
   # uninterrupted block rather than split around the lighter questions.
-  if [[ -n "${TRELLIS_CHOICE}" ]]; then
+  if [[ "${LAYOUT}" == hub ]]; then
+    # Documents only: no Trellis task tree, no profile, no test page.
+    :
+  elif [[ -n "${TRELLIS_CHOICE}" ]]; then
     normalized_trellis_choice="$(normalize_yes_no "${TRELLIS_CHOICE}")" || die "--trellis must be yes or no"
     if [[ "${normalized_trellis_choice}" == "yes" ]]; then
       install_trellis=1
@@ -1356,12 +1489,18 @@ main() {
     fi
   fi
 
-  profile="$(resolve_profile)"
+  if [[ "${LAYOUT}" == hub ]]; then
+    profile="none"
+  else
+    profile="$(resolve_profile)"
+  fi
 
   CC_WORKFLOW_ENABLED="$(resolve_cc_workflow)"
-  TEST_CHECKLIST_ENABLED="$(resolve_test_checklist)"
+  if [[ "${LAYOUT}" != hub ]]; then
+    TEST_CHECKLIST_ENABLED="$(resolve_test_checklist)"
+  fi
 
-  prepare_template_set "${profile}" "${TEMPLATE_INTEGRATIONS}" "${CC_WORKFLOW_ENABLED}" "${TEST_CHECKLIST_ENABLED}"
+  prepare_template_set "${profile}" "${TEMPLATE_INTEGRATIONS}" "${CC_WORKFLOW_ENABLED}" "${TEST_CHECKLIST_ENABLED}" "${LAYOUT}"
   info "template set: ${TEMPLATE_SET_LABEL}"
 
   if [[ "${install_trellis}" -eq 1 ]]; then
@@ -1371,13 +1510,23 @@ main() {
   write_project_placeholders "${project_dir}"
   record_scaffold_state "${project_dir}" "${profile}"
 
-  if [[ "${profile}" == "ask" ]]; then
-    info "AGENTS.md keeps every profile block for the project's AI to resolve"
-  else
-    info "AGENTS.md assembled with the '${profile}' profile"
+  if [[ "${LAYOUT}" == member ]]; then
+    layout_register_member "${HUB_DIR}" "${project_dir}"
+    layout_shield_member "${HUB_DIR}" "${project_dir}"
+    [[ "${DRY_RUN}" -eq 1 ]] || info "the hub's .gitignore and docs/tasks/ changed; commit them in the hub"
   fi
 
-  info "next: edit AGENTS.md with real project guidance"
+  if [[ "${LAYOUT}" == hub ]]; then
+    info "AGENTS.md assembled for a hub: the hub rules, no profile"
+    info "next: describe the project in AGENTS.md and docs/wiki/overview.md"
+  else
+    if [[ "${profile}" == "ask" ]]; then
+      info "AGENTS.md keeps every profile block for the project's AI to resolve"
+    else
+      info "AGENTS.md assembled with the '${profile}' profile"
+    fi
+    info "next: edit AGENTS.md with real project guidance"
+  fi
   ui_outro "done  ${project_dir}"
 }
 

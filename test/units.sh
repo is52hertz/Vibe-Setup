@@ -54,6 +54,8 @@ VIBE_INIT_VERSION="test"
 # shellcheck source=../lib/sync.sh
 . "${REPO_ROOT}/lib/sync.sh"
 . "${REPO_ROOT}/lib/upgrade.sh"
+# shellcheck source=../lib/layout.sh
+. "${REPO_ROOT}/lib/layout.sh"
 APPLY_FILES=""
 ON_EXISTS=""
 TEMPLATE_DIR="${WORK}/tset"
@@ -96,6 +98,40 @@ has   "tool keeps its own profile"     "${out}" '<PROFILE id="tool">'
 hasnt "tool drops the other profile"   "${out}" '<PROFILE id="service">'
 hasnt "a chosen profile drops the setup note" "${out}" "<PROFILE_SETUP>"
 has   "requested integration is added" "${out}" '<INTEGRATION id="trellis">'
+
+hasnt "a single repository gets no layout block" "${out}" "<LAYOUT"
+
+# A hub plans and holds documents: its layout block, and no profile to resolve.
+assemble_agents_md "${WORK}/agents-hub.md" "ask" "" "hub"
+out="$(cat "${WORK}/agents-hub.md")"
+has   "a hub keeps the core rules"        "${out}" "<CORE_RULES>"
+has   "a hub gets the hub layout block"   "${out}" '<LAYOUT id="hub">'
+hasnt "a hub gets no profile"             "${out}" "<PROFILE"
+is    "the hub block follows the core rules" \
+  "$(grep -oE '^<(CORE_RULES|LAYOUT)' "${WORK}/agents-hub.md" | tr '\n' ' ')" "<CORE_RULES <LAYOUT "
+
+# A member keeps the ordinary profile choice and adds its task-file rules.
+assemble_agents_md "${WORK}/agents-member.md" "tool" "" "member"
+out="$(cat "${WORK}/agents-member.md")"
+has   "a member gets the member layout block" "${out}" '<LAYOUT id="member">'
+has   "a member keeps its chosen profile"     "${out}" '<PROFILE id="tool">'
+hasnt "a member gets no hub rules"            "${out}" '<LAYOUT id="hub">'
+
+materialize_template_set "${WORK}/set-hub" "ask" "" 0 0 "hub"
+if [[ -f "${WORK}/set-hub/docs/README.md" && -f "${WORK}/set-hub/docs/tasks/README.md" \
+      && -f "${WORK}/set-hub/docs/next.md" && -f "${WORK}/set-hub/docs/handoff.md" ]]; then
+  ok "a hub template set carries the docs skeleton"
+else
+  ko "a hub template set carries the docs skeleton" "$(find "${WORK}/set-hub" -type f)"
+fi
+materialize_template_set "${WORK}/set-single" "ask" "" 0 0
+if [[ -e "${WORK}/set-single/docs" ]]; then
+  ko "a single template set carries no docs skeleton" "docs/ present"
+else
+  ok "a single template set carries no docs skeleton"
+fi
+yes_opt=0; block_is_optional LAYOUT && yes_opt=1
+is "a missing layout block is an opt-out, not a gap" "${yes_opt}" "1"
 
 # A generated file must not open or close with blank lines: a trailing one is
 # what makes a later block removal leave a double blank behind.
@@ -1182,6 +1218,42 @@ mkdir -p "${TRP}/.trellis"
 cat "${TEMPLATE_ROOT}/blocks/integrations/trellis.md" >> "${TRP}/AGENTS.md"
 has "the block toggle says Trellis itself stays" \
   "$(trellis_ops "${TRP}" no "" 'toggle_trellis_integration "${TR_PROJ}"')" "Trellis itself stays set up"
+
+# --- layouts: a hub and the repositories inside it --------------------------
+L="${WORK}/layouts"; mkdir -p "${L}"
+printf 'one\ntwo' > "${L}/no-newline"
+layout_append_line "${L}/no-newline" "three" 2>/dev/null
+layout_append_line "${L}/no-newline" "three" 2>/dev/null
+is "appending keeps the last line and adds the new one once" "$(cat "${L}/no-newline")" "one
+two
+three"
+
+mkdir -p "${L}/hub/.vibe-init" "${L}/hub/Repo" "${L}/plain/Repo"
+printf 'layout\thub\n' > "${L}/hub/.vibe-init/manifest"
+is "a project directly inside a hub finds it" "$(layout_hub_of "${L}/hub/Repo")" "$(cd "${L}/hub" && pwd -P)"
+is "a project in an ordinary folder finds no hub" "$(layout_hub_of "${L}/plain/Repo")" ""
+is "a member's task directory is its lowercased name" "$(layout_task_dir_name "${L}/hub/Repo")" "repo"
+
+# An existing settings.local.json is the user's: reported, never rewritten.
+mkdir -p "${L}/hub/Own/.claude"
+printf '{"permissions":{}}\n' > "${L}/hub/Own/.claude/settings.local.json"
+out="$(layout_shield_member "${L}/hub" "${L}/hub/Own" 2>&1)"
+is  "an existing local settings file is left as it was" "$(cat "${L}/hub/Own/.claude/settings.local.json")" '{"permissions":{}}'
+has "and the missing exclusion is reported" "${out}" "exists without the hub exclusion"
+
+# A category folder groups repositories and has no history of its own.
+mkdir -p "${L}/cat/a/.git" "${L}/cat/b/.git"
+yes_cat=0; layout_looks_like_category "${L}/cat" && yes_cat=1
+is "two nested repositories and no history read as a category" "${yes_cat}" "1"
+mkdir -p "${L}/cat/.vibe-init"; printf 'layout\tsingle\n' > "${L}/cat/.vibe-init/manifest"
+yes_cat=0; layout_looks_like_category "${L}/cat" && yes_cat=1
+is "an old single manifest does not hide a category" "${yes_cat}" "1"
+printf 'layout\thub\n' > "${L}/cat/.vibe-init/manifest"
+yes_cat=0; layout_looks_like_category "${L}/cat" && yes_cat=1
+is "a hub is not a category" "${yes_cat}" "0"
+mkdir -p "${L}/one/a/.git"
+yes_cat=0; layout_looks_like_category "${L}/one" && yes_cat=1
+is "one nested repository is not a category" "${yes_cat}" "0"
 
 # --- the interface language ---------------------------------------------------
 # English is the source text: a lookup returns its input untouched, which is

@@ -75,13 +75,14 @@ modern_marker_tag() {
 
 # True for a block whose absence from a project file is a decision, not a gap:
 # a profile the project resolved and pruned, an integration or feature it does
-# not use. Apply mode assembles with every profile present, so without this a
+# not use, a layout block a project that is not a hub or hub member has no use
+# for. Apply mode assembles with every profile present, so without this a
 # project that settled on one would be told it is missing the others on every
 # single run. Absence of any other block is worth reporting.
 # Usage: block_is_optional <tag>
 block_is_optional() {
   case "$1" in
-    PROFILE|PROFILE_SETUP|INTEGRATION|FEATURE) return 0 ;;
+    PROFILE|PROFILE_SETUP|INTEGRATION|FEATURE|LAYOUT) return 0 ;;
     *) return 1 ;;
   esac
 }

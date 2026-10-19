@@ -16,7 +16,8 @@
 # parser is needed (the tool depends on nothing beyond bash, coreutils and awk).
 #
 #   schema  2
-#   version 1.2.0  (last tool used, not proof that reviews are resolved)
+#   version 1.3.0  (last tool used, not proof that reviews are resolved)
+#   layout  single | hub | member
 #   file    AGENTS.md                       <hash>
 #   block   AGENTS.md   CORE_RULES          <hash>
 #   block   AGENTS.md   PROFILE     tool    <hash>
@@ -42,6 +43,9 @@ STATE_RECORDS=()
 # — apply mode assembles with profile=ask and must not clobber the real choice
 # a scaffold recorded.
 STATE_SET_PROFILE=""
+# single | hub | member. Empty keeps what the manifest says; a manifest written
+# before layouts existed reads as single.
+STATE_SET_LAYOUT=""
 STATE_SET_INTEGRATIONS=""
 STATE_SET_CC=""
 STATE_SET_CHECKLIST=""
@@ -203,7 +207,7 @@ state_drop_pending() {
 state_flush() {
   local project_dir="$1"
   local dir="" manifest="" tmp_new="" tmp_out="" rec=""
-  local profile="" integrations="" cc="" checklist="" trellis="" created=""
+  local profile="" layout="" integrations="" cc="" checklist="" trellis="" created=""
 
   state_check_schema "${project_dir}" || return 1
   dir="$(state_dir "${project_dir}")"
@@ -224,6 +228,7 @@ state_flush() {
   # manifest already says (apply mode assembles with profile=ask and must not
   # overwrite the real answer a scaffold recorded).
   profile="${STATE_SET_PROFILE:-$(state_get "${project_dir}" profile)}"
+  layout="${STATE_SET_LAYOUT:-$(state_get "${project_dir}" layout)}"
   integrations="${STATE_SET_INTEGRATIONS:-$(state_get "${project_dir}" integrations)}"
   cc="${STATE_SET_CC:-$(state_get "${project_dir}" cc_workflow)}"
   checklist="${STATE_SET_CHECKLIST:-$(state_get "${project_dir}" test_checklist)}"
@@ -254,6 +259,7 @@ state_flush() {
     printf 'created\t%s\n'      "${created}"
     printf 'updated\t%s\n'      "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
     printf 'profile\t%s\n'      "${profile}"
+    printf 'layout\t%s\n'       "${layout:-single}"
     printf 'integrations\t%s\n' "${integrations}"
     printf 'cc_workflow\t%s\n'  "${cc}"
     printf 'test_checklist\t%s\n' "${checklist}"

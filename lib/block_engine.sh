@@ -171,11 +171,17 @@ _squeeze_blank_lines() {
 #                                     <PROFILE_SETUP> note telling the project's
 #                                     AI to resolve the choice and delete the rest
 #   integrations_csv comma/space separated ids from blocks/integrations/
-# Usage: assemble_agents_md <target_file> <profile_choice> <integrations_csv>
+#   layout           single (default) | hub | member. A hub plans and holds
+#                    documents, so it gets its <LAYOUT> block and no profile; a
+#                    member of a hub gets its <LAYOUT> block on top of the usual
+#                    profile choice. Placed right after the core rules, where a
+#                    member's "### Task Files" reads as one of them.
+# Usage: assemble_agents_md <target_file> <profile_choice> <integrations_csv> [layout]
 assemble_agents_md() {
   local target_file="$1"
   local profile_choice="${2:-ask}"
   local integrations_csv="${3:-}"
+  local layout="${4:-single}"
   local blocks="" tmp="" f="" integ=""
   local -a integs=()
 
@@ -189,8 +195,14 @@ assemble_agents_md() {
     _append_fragment "${blocks}/${f}" "${tmp}"
   done
 
-  case "${profile_choice}" in
-    service|tool)
+  case "${layout}" in
+    hub|member) _append_fragment "${blocks}/layouts/${layout}.md" "${tmp}" ;;
+  esac
+
+  case "${layout}:${profile_choice}" in
+    hub:*)
+      ;;
+    *:service|*:tool)
       _append_fragment "${blocks}/profiles/${profile_choice}.md" "${tmp}"
       ;;
     *)
@@ -252,14 +264,17 @@ cc_workflow_variant() {
 # templates/common/, plus the two assembled files, plus the CC-Workflow document
 # when that feature is on. Everything downstream (scaffold copies and apply mode)
 # reads from the result, so there is exactly one place where a variant is decided.
-# Usage: materialize_template_set <out_dir> <profile> <integrations_csv> <enable_cc> <enable_checklist>
+# A hub also gets its docs/ skeleton under docs/ — seed content the scaffold
+# copies once, not a file the sync keeps following (it is not in TEMPLATE_FILES).
+# Usage: materialize_template_set <out_dir> <profile> <integrations_csv> <enable_cc> <enable_checklist> [layout]
 materialize_template_set() {
   local out_dir="$1"
   local profile="${2:-ask}"
   local integrations_csv="${3:-}"
   local enable_cc="${4:-0}"
   local enable_checklist="${5:-0}"
-  local common="" cc_src="" agent_src="" checklist_src=""
+  local layout="${6:-single}"
+  local common="" cc_src="" agent_src="" checklist_src="" docs_src=""
 
   common="$(common_root)"
   mkdir -p "${out_dir}"
@@ -272,7 +287,7 @@ materialize_template_set() {
   fi
 
   if [[ -d "$(blocks_root)" ]]; then
-    assemble_agents_md "${out_dir}/AGENTS.md" "${profile}" "${integrations_csv}"
+    assemble_agents_md "${out_dir}/AGENTS.md" "${profile}" "${integrations_csv}" "${layout}"
     assemble_claude_md "${out_dir}/CLAUDE.md" "${enable_cc}"
   else
     warn "template blocks dir not found: $(blocks_root); falling back to built-in placeholders"
@@ -294,6 +309,16 @@ materialize_template_set() {
       cp "${agent_src}" "${out_dir}/.claude/agents/codex-run.md"
     else
       warn "CC-Workflow subagent template not found: ${agent_src}"
+    fi
+  fi
+
+  if [[ "${layout}" == hub ]]; then
+    docs_src="$(blocks_root)/layouts/hub-docs"
+    if [[ -d "${docs_src}" ]]; then
+      mkdir -p "${out_dir}/docs"
+      cp -R "${docs_src}/." "${out_dir}/docs/"
+    else
+      warn "hub docs template not found: ${docs_src}"
     fi
   fi
 
