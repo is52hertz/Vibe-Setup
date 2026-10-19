@@ -1201,11 +1201,19 @@ is "an unknown string falls back to English" \
   "$(UI_LANG=zh; _t "Claude Code (also read by Codex)"; printf '%s' "${UI_T}")" "Claude Code (also read by Codex)"
 # A sentence printed over several info lines reads as one Chinese sentence.
 out="$( { UI_LANG=zh
-  ui_info "once the conversion is done and the .template files are deleted, run"
+  ui_info "once the conversion is explicitly acknowledged, run"
   ui_info "vibe-init --apply again: that sync compares the new blocks with the"
   ui_info "templates and prints the prompt for merging their content."; } 2>&1 )"
 is "a multi-line sentence prints as one line" "$(printf '%s\n' "${out}" | wc -l | tr -d ' ')" "1"
 has "and says the whole of it" "${out}" "再运行一次 vibe-init --apply"
+# Upgrade controls arrived after the catalog; their text must not stay English.
+is "Chinese translates the upgrade menu row" \
+  "$(UI_LANG=zh; _t "Upgrade controls"; printf '%s' "${UI_T}")" "升级控制"
+is "Chinese translates the pending-review count on the card" \
+  "$(UI_LANG=zh; _t "last tool v1.2.0; 2 pending review(s)"; printf '%s' "${UI_T}")" "上次运行 v1.2.0；2 个待审阅"
+is "Chinese translates the resolve hint, keeping the command" \
+  "$(UI_LANG=zh; _t "resolve after review: vibe-init --apply --resolve a --expect b --resolution merged"; printf '%s' "${UI_T}")" \
+  "审阅后确认：vibe-init --apply --resolve a --expect b --resolution merged"
 
 UI_WIDTH=0; _ui_width "abc"; is "ASCII is one column a character" "${UI_WIDTH}" "3"
 _ui_width "同步模板"; is "CJK is two columns a character" "${UI_WIDTH}" "8"

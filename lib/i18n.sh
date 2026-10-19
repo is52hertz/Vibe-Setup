@@ -213,8 +213,8 @@ _i18n_zh() {
       UI_T="其中 1 个是旧的 pre-<TAG> 格式；复制下面分隔线之间的提示词来转换它：" ;;
     "lines below to convert it:") UI_T_SKIP=1 ;;
     "between the lines below to convert them:") UI_T_SKIP=1 ;;
-    "once the conversion is done and the .template files are deleted, run")
-      UI_T="转换完成并删除 .template 文件后，再运行一次 vibe-init --apply：那次同步会把新的块与模板比对，并打印合并内容用的提示词。" ;;
+    "once the conversion is explicitly acknowledged, run")
+      UI_T="显式确认转换完成后，再运行一次 vibe-init --apply：那次同步会把新的块与模板比对，并打印合并内容用的提示词。" ;;
     "vibe-init --apply again: that sync compares the new blocks with the") UI_T_SKIP=1 ;;
     "templates and prints the prompt for merging their content.") UI_T_SKIP=1 ;;
     "Sync result") UI_T="同步结果" ;;
@@ -304,6 +304,65 @@ _i18n_zh() {
     "Upgrading Trellis CLI (npm install -g @mindfoldhq/trellis)...")
       UI_T="正在升级 Trellis CLI（npm install -g @mindfoldhq/trellis）..." ;;
 
+    # --- upgrade controls ----------------------------------------------------
+    "Upgrades") UI_T="升级" ;;
+    "Upgrade controls") UI_T="升级控制" ;;
+    "reviews, pause, ownership") UI_T="审阅、暂停、归属" ;;
+    "Upgrade reviews") UI_T="升级审阅" ;;
+    "Review pending updates") UI_T="审阅待处理的更新" ;;
+    "merge or keep project rules") UI_T="合并或保留项目规则" ;;
+    "Pause project upgrades") UI_T="暂停项目升级" ;;
+    "until resumed") UI_T="直到恢复" ;;
+    "Resume project upgrades") UI_T="恢复项目升级" ;;
+    "check on next sync") UI_T="下次同步时检查" ;;
+    "Let project own a file or block") UI_T="让项目自管某个文件或块" ;;
+    "stop following templates") UI_T="不再跟随模板" ;;
+    "Follow templates again") UI_T="重新跟随模板" ;;
+    "file or block") UI_T="文件或块" ;;
+    "Choose ownership scope") UI_T="选择归属范围" ;;
+    "Choose reviewed file") UI_T="选择已审阅的文件" ;;
+    "Merge reviewed and complete") UI_T="已审阅，合并完成" ;;
+    "Keep project version this time") UI_T="本次保留项目版本" ;;
+    "Format conversion complete") UI_T="格式转换已完成" ;;
+    "Defer this update") UI_T="暂缓这次更新" ;;
+    "Confirm your review decision") UI_T="确认审阅结论" ;;
+    "Sync partially complete: reviews still pending.") UI_T="同步部分完成：仍有待审阅项。" ;;
+    "Project upgrades remain paused.") UI_T="项目升级仍处于暂停状态。" ;;
+    "Project upgrades are paused") UI_T="项目升级已暂停" ;;
+    "Project upgrades are paused; use --apply --resume-updates")
+      UI_T="项目升级已暂停；用 --apply --resume-updates 恢复" ;;
+    "to keep the project version this time, use --resolution keep instead")
+      UI_T="如本次要保留项目版本，改用 --resolution keep" ;;
+    "project-managed or paused") UI_T="由项目自管或已暂停" ;;
+    "awaiting explicit acknowledgement") UI_T="等待显式确认" ;;
+    "invalid block structure; repair before merge") UI_T="块结构无效；合并前先修复" ;;
+    "local deletion") UI_T="本地已删除" ;;
+    "locally deleted file, upstream changed") UI_T="本地已删除，上游有变化" ;;
+    "kept project version") UI_T="保留了项目版本" ;;
+    "another upgrade holds .vibe-init/lock; after an interrupted run, verify it stopped before removing the lock")
+      UI_T="另一个升级进程持有 .vibe-init/lock；如果上次运行被中断，先确认它已停止再删除锁" ;;
+    "confirm converted first, then sync again to review content") UI_T="先确认 converted，再同步一次审阅内容" ;;
+    "files changed after this upgrade; inspect before/ and recover manually")
+      UI_T="本次升级后文件又有改动；请检查 before/ 并手动恢复" ;;
+    "invalid backup ID") UI_T="备份 ID 无效" ;;
+    "invalid block scope") UI_T="块范围无效" ;;
+    "invalid or missing managed blocks") UI_T="受管块无效或缺失" ;;
+    "no completed snapshot; inspect the before/ directory for manual recovery")
+      UI_T="没有完整的快照；请检查 before/ 目录手动恢复" ;;
+    "pending template changed; refusing acknowledgement") UI_T="待审阅的模板已被改动；拒绝确认" ;;
+    "project file changed since review; inspect it again") UI_T="审阅后项目文件又有改动；请重新检查" ;;
+    "refusing symlinks in upgrade state") UI_T="升级状态中不允许符号链接" ;;
+    "repair malformed or duplicate block markers before acknowledgement")
+      UI_T="确认前先修复格式错误或重复的块标记" ;;
+    "resolution must be merged, keep, or converted") UI_T="resolution 只能是 merged、keep 或 converted" ;;
+    "this file has no managed blocks") UI_T="该文件没有受管块" ;;
+    "this review is not a format conversion") UI_T="该审阅不是格式转换" ;;
+    "unknown or already resolved review") UI_T="审阅不存在或已确认" ;;
+    "unresolved conflict markers") UI_T="存在未解决的冲突标记" ;;
+    "upgrade state is not a directory") UI_T="升级状态不是目录" ;;
+    "dry-run: keep manifest, policy and base trackable; ignore local upgrade artifacts")
+      UI_T="dry-run：manifest、policy 和 base 保持可提交；忽略本地升级产物" ;;
+
     # --- scaffold ------------------------------------------------------------
     "Node.js was not found. Trellis requires Node.js 18+.") UI_T="未找到 Node.js。Trellis 需要 Node.js 18+。" ;;
     "python3 was not found. Trellis requires Python 3.9+.") UI_T="未找到 python3。Trellis 需要 Python 3.9+。" ;;
@@ -373,7 +432,6 @@ _i18n_zh_pattern() {
     UI_T="项目 v${BASH_REMATCH[1]} / CLI v${BASH_REMATCH[2]}"; return
   fi
   if _i18n_m '^CLI v(.*) ready$'; then UI_T="CLI v${BASH_REMATCH[1]} 可用"; return; fi
-  if _i18n_m '^project tracked at v(.*)$'; then UI_T="项目记录为 v${BASH_REMATCH[1]}"; return; fi
 
   # --- the dashboard menu ----------------------------------------------------
   if _i18n_m '^v([^ ,]*), current$'; then UI_T="v${BASH_REMATCH[1]}，已是最新"; return; fi
@@ -470,6 +528,47 @@ _i18n_zh_pattern() {
   if _i18n_m '^merged secret-deny rules into (.*)$'; then UI_T="已将密钥 deny 规则合并进 ${BASH_REMATCH[1]}"; return; fi
   if _i18n_m '^failed to merge deny rules into (.*)$'; then UI_T="向 ${BASH_REMATCH[1]} 合并 deny 规则失败"; return; fi
 
+  # --- upgrade controls ------------------------------------------------------
+  if _i18n_m '^last tool v(.*); ([0-9]+) pending review\(s\)$'; then
+    UI_T="上次运行 v${BASH_REMATCH[1]}；${BASH_REMATCH[2]} 个待审阅"; return
+  fi
+  if _i18n_m '^([0-9]+) pending review\(s\); deleting \.template files does not resolve them\.$'; then
+    UI_T="${BASH_REMATCH[1]} 个待审阅；删除 .template 文件不会完成审阅。"; return
+  fi
+  if _i18n_m '^target: (.*), merge; upstream: (.*)$'; then UI_T="目标：${BASH_REMATCH[1]}，内容合并；上游：${BASH_REMATCH[2]}"; return; fi
+  if _i18n_m '^target: (.*), convert; upstream: (.*)$'; then UI_T="目标：${BASH_REMATCH[1]}，格式转换；上游：${BASH_REMATCH[2]}"; return; fi
+  if _i18n_m '^current fingerprint: (.*)$'; then UI_T="当前指纹：${BASH_REMATCH[1]}"; return; fi
+  if _i18n_m '^reviewed fingerprint: (.*)$'; then UI_T="已审阅的指纹：${BASH_REMATCH[1]}"; return; fi
+  if _i18n_m '^resolve after review: (.*)$'; then UI_T="审阅后确认：${BASH_REMATCH[1]}"; return; fi
+  if _i18n_m '^old upstream file \(block bases may be newer\): (.*)$'; then
+    UI_T="旧的上游文件（块的基线可能更新）：${BASH_REMATCH[1]}"; return
+  fi
+  if _i18n_m '^old upstream (<.*>): (.*)$'; then UI_T="旧的上游 ${BASH_REMATCH[1]}：${BASH_REMATCH[2]}"; return; fi
+  if _i18n_m '^Review this file and its frozen template before acknowledging: (.*)$'; then
+    UI_T="确认前先审阅该文件及其冻结的模板：${BASH_REMATCH[1]}"; return
+  fi
+  if _i18n_m '^resolved (.*): (.*); run --apply to check for later updates$'; then
+    UI_T="已确认 ${BASH_REMATCH[1]}：${BASH_REMATCH[2]}；运行 --apply 检查后续更新"; return
+  fi
+  if _i18n_m '^recovery snapshot: (.*)$'; then UI_T="恢复快照：${BASH_REMATCH[1]}"; return; fi
+  if _i18n_m '^restored (.*)$'; then UI_T="已恢复 ${BASH_REMATCH[1]}"; return; fi
+  if _i18n_m '^(pause-updates|resume-updates): saved; no template files changed$'; then
+    UI_T="${BASH_REMATCH[1]}：已保存；没有改动模板文件"; return
+  fi
+  if _i18n_m '^(self-manage|follow): (.*); pending reviews still require explicit acknowledgement$'; then
+    UI_T="${BASH_REMATCH[1]}：${BASH_REMATCH[2]}；待审阅项仍需显式确认"; return
+  fi
+  if _i18n_m '^corrupt upstream base object: (.*)$'; then UI_T="上游基线对象已损坏：${BASH_REMATCH[1]}"; return; fi
+  if _i18n_m '^hand-out is not a regular file: (.*)$'; then UI_T=".template 不是普通文件：${BASH_REMATCH[1]}"; return; fi
+  if _i18n_m '^invalid upstream block structure: (.*)$'; then UI_T="上游块结构无效：${BASH_REMATCH[1]}"; return; fi
+  if _i18n_m '^managed path is not a regular file: (.*)$'; then UI_T="受管路径不是普通文件：${BASH_REMATCH[1]}"; return; fi
+  if _i18n_m '^refusing symlink: (.*)$'; then UI_T="拒绝符号链接：${BASH_REMATCH[1]}"; return; fi
+  if _i18n_m '^unknown block: (.*)$'; then UI_T="未知的块：${BASH_REMATCH[1]}"; return; fi
+  if _i18n_m '^unknown managed file: (.*)$'; then UI_T="未知的受管文件：${BASH_REMATCH[1]}"; return; fi
+  if _i18n_m '^unsupported state schema: (.*); use a newer vibe-init$'; then
+    UI_T="不支持的状态 schema：${BASH_REMATCH[1]}；请使用更新版本的 vibe-init"; return
+  fi
+
   # --- git, state, scaffold --------------------------------------------------
   if _i18n_m '^skip git init: (.*) is already a git repository$'; then
     UI_T="跳过 git init：${BASH_REMATCH[1]} 已经是 git 仓库"; return
@@ -493,6 +592,10 @@ _i18n_zh_pattern() {
   # --- dry-run ---------------------------------------------------------------
   if _i18n_m '^dry-run: copy (.*) -> (.*)$'; then UI_T="dry-run：复制 ${BASH_REMATCH[1]} -> ${BASH_REMATCH[2]}"; return; fi
   if _i18n_m '^dry-run: mv (.*) -> (.*)$'; then UI_T="dry-run：移动 ${BASH_REMATCH[1]} -> ${BASH_REMATCH[2]}"; return; fi
+  if _i18n_m '^dry-run: remove retired (.*) from (.*)$'; then UI_T="dry-run：从 ${BASH_REMATCH[2]} 移除已退役的 ${BASH_REMATCH[1]}"; return; fi
+  if _i18n_m '^dry-run: resolve (.*) as (.*)$'; then UI_T="dry-run：把 ${BASH_REMATCH[1]} 确认为 ${BASH_REMATCH[2]}"; return; fi
+  if _i18n_m '^dry-run: restore (.*)$'; then UI_T="dry-run：恢复 ${BASH_REMATCH[1]}"; return; fi
+  if _i18n_m '^dry-run: set (.*) to (.*)$'; then UI_T="dry-run：把 ${BASH_REMATCH[1]} 设为 ${BASH_REMATCH[2]}"; return; fi
   if _i18n_m '^dry-run: refresh (.*) in (.*)$'; then UI_T="dry-run：刷新 ${BASH_REMATCH[2]} 中的 ${BASH_REMATCH[1]}"; return; fi
   if _i18n_m '^dry-run: remove the CC-Workflow block from (.*)$'; then UI_T="dry-run：从 ${BASH_REMATCH[1]} 移除 CC-Workflow 块"; return; fi
   if _i18n_m '^dry-run: reference the CC-Workflow block from (.*)$'; then UI_T="dry-run：在 ${BASH_REMATCH[1]} 中引用 CC-Workflow 块"; return; fi
