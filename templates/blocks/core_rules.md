@@ -46,6 +46,7 @@
 ### Secrets & Sensitive Data
 - Never hardcode secrets or credentials; read them from environment/config. Never print, log, or echo secrets, tokens, or PII.
 - Keep the project's seeded secrets-deny rules (covering `.env*`, `secrets/**`, and key files) in place.
+- Before printing a file you have not seen, check its size and type (`ls -l`, `file`); credentials leak through files that were never meant to hold them.
 
 ### Verify & Commit
 - Before coding, restate the task as a concrete, checkable success criterion rather than "make it work", and scale testing to the work's risk.
@@ -55,14 +56,22 @@
 - Before committing, inspect dirty files and separate current-task agent edits from unrecognized dirty files. Do not include unrecognized dirty files in commits unless the user explicitly asks to include them.
 - If a dirty file's ownership or task relevance cannot be determined safely, stop and ask the user before committing.
 - Group commits by coherent change unit. Do not push unless explicitly requested.
-- Branching: per-feature work lands on a `feat/*` branch that merges into the mainline. Keep merged `feat/*` branches as historical archives — never delete them (local or remote).
+- Branching: decide at the start of a task, not per commit — one task gets at most one branch.
+  - Work that fits in one commit (docs, chores, small fixes) goes straight onto the mainline.
+  - Use a short-lived branch (`feat/*`, `fix/*`, `refactor/*`; `try/*` for experiments) when the
+    work spans several commits, must stay off the mainline until the user accepts it, or runs in
+    parallel with another agent (give that agent its own `git worktree`).
+  - Merge only after verification passes, with `--no-ff` so the merge commit names the branch;
+    then delete the branch, local and remote. The merge commit is the record.
+  - A branch that will not be merged (a rejected experiment) is archived as a tag
+    `archive/<branch>` before deletion. Never delete an unmerged branch without the user's OK.
 - Commit message format (Conventional Commits):
   ```
   type(scope): short summary
 
   Detailed description of what changed and why.
   ```
-  Types: `feat`, `fix`, `refactor`, `chore`, `docs`, `test`, `ci`, `perf`.
+  Types: `feat`, `fix`, `refactor`, `chore`, `docs`, `test`, `ci`, `perf`, `build`, `style`, `revert`.
 
 ### Session Handoff
 - `notice.md` files are scoped by directory and record durable handoff information for the next agent.

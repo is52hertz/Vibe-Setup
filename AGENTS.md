@@ -57,7 +57,7 @@ Vibe-Setup is a project-bootstrapping tool for AI-assisted development. Its cent
 - **Language / framework conventions**: Bash with `set -euo pipefail` and `IFS=$'\n\t'`; must stay compatible with macOS Bash 3.2 (no associative arrays, no `mapfile`, no namerefs, no fractional `read -t`, and no command substitution that closes immediately inside another one — build option lists in an array instead). No runtime dependency beyond Bash, coreutils and awk. Quote expansions, use `[[ ]]` tests, and prefer `printf` over `echo`. Every action that writes a file or runs a command must honor `--dry-run` (route through `run_cmd`/`run_in_dir`) and skip existing files rather than overwriting them.
 - **Terminal output**: Everything the user reads goes through `lib/ui.sh`, never a bare `printf` to stderr, and every variable it defines must exist on both branches of the color check — one that exists only in the rich branch aborts the run under `set -u` the first time output is piped. Anything interactive needs all three paths: rich, no-color-but-interactive, and non-terminal (take the default). Color carries meaning, so pick a state level (`ok`/`info`/`todo`/`off`/`neutral`/`bad`) rather than a color: `off` covers deliberately-off and absent states, `neutral` is for a value to be read rather than judged (a toggle's `off` must not be dimmed away, nor libelled with red), and red is reserved for what actually blocks the user — a card that reddens the ordinary case spends the one color that should mean "act now". The plain rendering is a contract: adding color must not change a byte of what `NO_COLOR` prints, because the dry-run suite and anything else greps that. Write user-facing text in English and add its Chinese to `lib/i18n.sh` in the same change — a message with no entry silently stays English in a Chinese run; reword an English message and its catalog key must move with it.
 - **Resident vs. revealed**: a menu row has two parts, and what belongs in each is decided by whether it changes. **Resident text — the part visible on every row — states what the row is about and never varies**: `templates`, `in AGENTS.md`, `platforms, update, pause, uninstall`. It is always dim, because static context needs no semantic color. **Everything dynamic belongs in the revealed part**, shown only while the row is under the cursor: a toggle's `on`/`off`, a version, a count of pending changes. That is where the state levels apply. A row that changes its resident text as the project changes is a design error — the reader learns to re-read the whole column instead of trusting it, and the reveal stops meaning anything. Keep reveals scarce for the same reason red is scarce: if every row does something on selection, selection stops signalling.
-- **Security boundary**: The tool only scaffolds local files and runs explicitly user-gated installers (`npm install -g @mindfoldhq/trellis`). Never overwrite or merge a user's existing files — write `<name>.template` alongside instead. Never read or print secrets; the seeded `.claude/settings.json` denies reading `.env*`, `secrets/**`, and key files, and that protection must be preserved.
+- **Security boundary**: The tool only scaffolds local files and runs explicitly user-gated installers (`npm install -g @mindfoldhq/trellis`). Never overwrite or merge a user's existing files — write `<name>.template` alongside instead. Never read or print secrets; the seeded `.claude/settings.json` denies reading `.env*`, `secrets/**`, and key files, and that protection must be preserved. Before printing a file you have not seen, check its size and type (`ls -l`, `file`); credentials leak through files that were never meant to hold them.
 
 ### Verify & Commit
 - After any code change, run `./test/run.sh` (CLI, library, and upgrade lifecycle suites). A new assertion has to be able to fail: break the thing it covers, watch it go red, put it back.
@@ -66,14 +66,22 @@ Vibe-Setup is a project-bootstrapping tool for AI-assisted development. Its cent
 - Before committing, inspect dirty files and separate current-task agent edits from unrecognized dirty files. Do not include unrecognized dirty files in commits unless the user explicitly asks to include them.
 - If a dirty file's ownership or task relevance cannot be determined safely, stop and ask the user before committing.
 - Group commits by coherent change unit. Do not push unless explicitly requested.
-- Branching: per-feature work lands on a `feat/*` branch that merges into the mainline. Keep merged `feat/*` branches as historical archives — never delete them (local or remote).
+- Branching: decide at the start of a task, not per commit — one task gets at most one branch.
+  - Work that fits in one commit (docs, chores, small fixes) goes straight onto the mainline.
+  - Use a short-lived branch (`feat/*`, `fix/*`, `refactor/*`; `try/*` for experiments) when the
+    work spans several commits, must stay off the mainline until the user accepts it, or runs in
+    parallel with another agent (give that agent its own `git worktree`).
+  - Merge only after verification passes, with `--no-ff` so the merge commit names the branch;
+    then delete the branch, local and remote. The merge commit is the record.
+  - A branch that will not be merged (a rejected experiment) is archived as a tag
+    `archive/<branch>` before deletion. Never delete an unmerged branch without the user's OK.
 - Commit message format (Conventional Commits):
   ```
   type(scope): short summary
 
   Detailed description of what changed and why.
   ```
-  Types: `feat`, `fix`, `refactor`, `chore`, `docs`, `test`, `ci`, `perf`.
+  Types: `feat`, `fix`, `refactor`, `chore`, `docs`, `test`, `ci`, `perf`, `build`, `style`, `revert`.
 
 ### Session Handoff
 - `notice.md` files are scoped by directory and record durable handoff information for the next agent.
