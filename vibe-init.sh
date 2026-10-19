@@ -47,6 +47,9 @@ TEST_CHECKLIST_ENABLED=0
 # repository that plans and coordinates the git repositories nested inside it.
 LAYOUT_CHOICE=""
 LAYOUT="single"
+# Set when the new project sits directly inside a hub: it becomes a member,
+# registered in the hub and shielded from the hub's own rules.
+HUB_DIR=""
 
 # Source helper modules
 [[ -f "${SCRIPT_DIR}/lib/ui.sh" ]] && . "${SCRIPT_DIR}/lib/ui.sh"
@@ -55,6 +58,7 @@ LAYOUT="single"
 [[ -f "${SCRIPT_DIR}/lib/state.sh" ]] && . "${SCRIPT_DIR}/lib/state.sh"
 [[ -f "${SCRIPT_DIR}/lib/sync.sh" ]] && . "${SCRIPT_DIR}/lib/sync.sh"
 [[ -f "${SCRIPT_DIR}/lib/upgrade.sh" ]] && . "${SCRIPT_DIR}/lib/upgrade.sh"
+[[ -f "${SCRIPT_DIR}/lib/layout.sh" ]] && . "${SCRIPT_DIR}/lib/layout.sh"
 [[ -f "${SCRIPT_DIR}/lib/trellis.sh" ]] && . "${SCRIPT_DIR}/lib/trellis.sh"
 # Optional comma/space separated subset of TEMPLATE_FILES to copy in apply mode.
 # Empty means "ask interactively" (or "all" under -y / non-TTY). Requires --apply.
@@ -1396,7 +1400,15 @@ main() {
 
   project_dir="$(choose_project_dir)"
 
-  LAYOUT="$(resolve_layout)"
+  # A project created directly inside a hub is one of its repositories, unless
+  # --layout says otherwise.
+  HUB_DIR="$(layout_hub_of "${project_dir}")"
+  if [[ -n "${HUB_DIR}" && -z "${LAYOUT_CHOICE}" ]]; then
+    LAYOUT="member"
+    info "inside the hub ${HUB_DIR}: setting this up as one of its repositories"
+  else
+    LAYOUT="$(resolve_layout)"
+  fi
 
   maybe_init_git "${project_dir}"
 
@@ -1447,6 +1459,12 @@ main() {
 
   write_project_placeholders "${project_dir}"
   record_scaffold_state "${project_dir}" "${profile}"
+
+  if [[ "${LAYOUT}" == member ]]; then
+    layout_register_member "${HUB_DIR}" "${project_dir}"
+    layout_shield_member "${HUB_DIR}" "${project_dir}"
+    [[ "${DRY_RUN}" -eq 1 ]] || info "the hub's .gitignore and docs/tasks/ changed; commit them in the hub"
+  fi
 
   if [[ "${LAYOUT}" == hub ]]; then
     info "AGENTS.md assembled for a hub: the hub rules, no profile"

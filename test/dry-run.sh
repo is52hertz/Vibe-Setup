@@ -632,6 +632,52 @@ vi "${d}" --layout nested -y
 rc_is "an unknown layout is refused" 1
 has   "and named" "--layout must be single or hub"
 
+# --- a project created inside a hub becomes one of its members ---------------
+hub="$(sandbox)"
+vi "${hub}" --layout hub -y
+cp "${hub}/.gitignore" "${hub}/gitignore.before"
+
+vi "${hub}" Beta -y --dry-run
+if cmp -s "${hub}/.gitignore" "${hub}/gitignore.before" && [[ ! -e "${hub}/docs/tasks/beta" ]]; then
+  ok "a dry-run member leaves the hub untouched"
+else
+  ko "a dry-run member leaves the hub untouched" "hub .gitignore or docs/tasks/ changed"
+fi
+has "and says what it would add to the hub" "dry-run: add /Beta/ to ${hub}/.gitignore"
+
+vi "${hub}" Alpha -y
+rc_is "a member scaffolds cleanly inside a hub" 0
+has   "the run says it is inside a hub" "inside the hub ${hub}: setting this up as one of its repositories"
+if grep -qF '<LAYOUT id="member">' "${hub}/Alpha/AGENTS.md" && grep -qF '<PROFILE' "${hub}/Alpha/AGENTS.md"; then
+  ok "a member AGENTS.md carries the task-file rules and keeps its profiles"
+else
+  ko "a member AGENTS.md carries the task-file rules and keeps its profiles" "missing block"
+fi
+if grep -qxF '/Alpha/' "${hub}/.gitignore"; then
+  ok "the hub ignores its new member"
+else
+  ko "the hub ignores its new member" "$(cat "${hub}/.gitignore")"
+fi
+[[ -d "${hub}/docs/tasks/alpha/done" ]] && ok "the hub gets a task directory for the member" \
+  || ko "the hub gets a task directory for the member" "no docs/tasks/alpha/done"
+if grep -qF '"**/'"$(basename "${hub}")"'/CLAUDE.md"' "${hub}/Alpha/.claude/settings.local.json" 2>/dev/null; then
+  ok "the member is shielded from the hub's CLAUDE.md"
+else
+  ko "the member is shielded from the hub's CLAUDE.md" "no claudeMdExcludes entry"
+fi
+if grep -qF "$(printf 'layout\tmember')" "${hub}/Alpha/.vibe-init/manifest"; then
+  ok "the member's manifest records it as a member"
+else
+  ko "the member's manifest records it as a member" "$(grep '^layout' "${hub}/Alpha/.vibe-init/manifest")"
+fi
+
+vi "${hub}" Gamma --layout single -y
+if ! grep -qF '<LAYOUT' "${hub}/Gamma/AGENTS.md" && ! grep -qxF '/Gamma/' "${hub}/.gitignore"; then
+  ok "--layout single inside a hub opts out of membership"
+else
+  ko "--layout single inside a hub opts out of membership" "registered anyway"
+fi
+
 # --- --apply --cc-workflow yes wires CLAUDE.md, not just the documents -------
 # A missing optional block is normally an opt-out the sync must respect, so it
 # never inserts one on its own. An explicit --cc-workflow yes is the opposite of

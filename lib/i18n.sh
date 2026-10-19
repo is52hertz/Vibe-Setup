@@ -409,6 +409,8 @@ _i18n_zh() {
     "AGENTS.md keeps every profile block for the project's AI to resolve")
       UI_T="AGENTS.md 保留所有 profile 块，交由项目的 AI 决定" ;;
     "next: edit AGENTS.md with real project guidance") UI_T="下一步：在 AGENTS.md 中写入真实的项目指引" ;;
+    "the hub's .gitignore and docs/tasks/ changed; commit them in the hub")
+      UI_T="hub 的 .gitignore 和 docs/tasks/ 已更改；请在 hub 中提交" ;;
     "What kind of repository is this?") UI_T="这是什么类型的仓库？" ;;
     "Single repository") UI_T="单一仓库" ;;
     "one project, one git repository") UI_T="一个项目，一个 git 仓库" ;;
@@ -586,6 +588,13 @@ _i18n_zh_pattern() {
     UI_T="提示：${BASH_REMATCH[1]} 不是 git 仓库；如需版本控制请自行运行 'git init'（--apply 不会运行）"; return
   fi
   if _i18n_m '^added (.*) to \.gitignore$'; then UI_T="已将 ${BASH_REMATCH[1]} 加入 .gitignore"; return; fi
+  if _i18n_m '^added (.*) to (.*)$'; then UI_T="已将 ${BASH_REMATCH[1]} 加入 ${BASH_REMATCH[2]}"; return; fi
+  if _i18n_m '^inside the hub (.*): setting this up as one of its repositories$'; then
+    UI_T="位于 hub ${BASH_REMATCH[1]} 之内：按它的成员仓库初始化"; return
+  fi
+  if _i18n_m '^(.*) exists without the hub exclusion; add this entry by hand:$'; then
+    UI_T="${BASH_REMATCH[1]} 已存在，但没有排除 hub 的规则；请手动加入这一项："; return
+  fi
   if _i18n_m '^could not keep the handed-out template for (.*)$'; then UI_T="无法保留 ${BASH_REMATCH[1]} 的模板副本"; return; fi
   if _i18n_m '^could not create (.*); skipping state record$'; then UI_T="无法创建 ${BASH_REMATCH[1]}；跳过状态记录"; return; fi
   if _i18n_m '^template set: (.*)$'; then UI_T="模板集：${BASH_REMATCH[1]}"; return; fi
