@@ -97,6 +97,40 @@ hasnt "tool drops the other profile"   "${out}" '<PROFILE id="service">'
 hasnt "a chosen profile drops the setup note" "${out}" "<PROFILE_SETUP>"
 has   "requested integration is added" "${out}" '<INTEGRATION id="trellis">'
 
+hasnt "a single repository gets no layout block" "${out}" "<LAYOUT"
+
+# A hub plans and holds documents: its layout block, and no profile to resolve.
+assemble_agents_md "${WORK}/agents-hub.md" "ask" "" "hub"
+out="$(cat "${WORK}/agents-hub.md")"
+has   "a hub keeps the core rules"        "${out}" "<CORE_RULES>"
+has   "a hub gets the hub layout block"   "${out}" '<LAYOUT id="hub">'
+hasnt "a hub gets no profile"             "${out}" "<PROFILE"
+is    "the hub block follows the core rules" \
+  "$(grep -oE '^<(CORE_RULES|LAYOUT)' "${WORK}/agents-hub.md" | tr '\n' ' ')" "<CORE_RULES <LAYOUT "
+
+# A member keeps the ordinary profile choice and adds its task-file rules.
+assemble_agents_md "${WORK}/agents-member.md" "tool" "" "member"
+out="$(cat "${WORK}/agents-member.md")"
+has   "a member gets the member layout block" "${out}" '<LAYOUT id="member">'
+has   "a member keeps its chosen profile"     "${out}" '<PROFILE id="tool">'
+hasnt "a member gets no hub rules"            "${out}" '<LAYOUT id="hub">'
+
+materialize_template_set "${WORK}/set-hub" "ask" "" 0 0 "hub"
+if [[ -f "${WORK}/set-hub/docs/README.md" && -f "${WORK}/set-hub/docs/tasks/README.md" \
+      && -f "${WORK}/set-hub/docs/next.md" && -f "${WORK}/set-hub/docs/handoff.md" ]]; then
+  ok "a hub template set carries the docs skeleton"
+else
+  ko "a hub template set carries the docs skeleton" "$(find "${WORK}/set-hub" -type f)"
+fi
+materialize_template_set "${WORK}/set-single" "ask" "" 0 0
+if [[ -e "${WORK}/set-single/docs" ]]; then
+  ko "a single template set carries no docs skeleton" "docs/ present"
+else
+  ok "a single template set carries no docs skeleton"
+fi
+yes_opt=0; block_is_optional LAYOUT && yes_opt=1
+is "a missing layout block is an opt-out, not a gap" "${yes_opt}" "1"
+
 # A generated file must not open or close with blank lines: a trailing one is
 # what makes a later block removal leave a double blank behind.
 first="$(head -1 "${WORK}/agents-tool.md")"
