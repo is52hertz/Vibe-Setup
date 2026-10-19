@@ -19,6 +19,7 @@ DRY_RUN=0 VIBE_INIT_VERSION=test ASSUME_DEFAULTS=1 APPLY_FILES='' ON_EXISTS=''
 . "${ROOT}/lib/sync.sh"
 . "${ROOT}/lib/upgrade.sh"
 . "${ROOT}/lib/trellis.sh"
+. "${ROOT}/lib/layout.sh"
 . "${ROOT}/lib/apply.sh"
 TEMPLATE_FILES=(AGENTS.md CLAUDE.md)
 TEMPLATE_DIR="${WORK}/templates"

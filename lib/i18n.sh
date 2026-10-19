@@ -149,6 +149,18 @@ _i18n_zh() {
     "Platforms") UI_T="平台" ;;
     "Test checklist") UI_T="测试清单" ;;
     "Format upgrade") UI_T="格式升级" ;;
+    "Layout") UI_T="布局" ;;
+    "single") UI_T="单一仓库" ;;
+    "hub") UI_T="hub" ;;
+    "member") UI_T="hub 成员" ;;
+    "inside a hub; --apply --layout member joins it") UI_T="位于 hub 之内；用 --apply --layout member 加入" ;;
+    "This folder looks like a category of independent repositories, not a project.")
+      UI_T="这个文件夹看起来是一组独立仓库的分类目录，而不是项目。请改为进入其中某个仓库运行 vibe-init --apply。" ;;
+    "Run vibe-init --apply inside one of them instead.") UI_T_SKIP=1 ;;
+    "Sync this folder as a project anyway?") UI_T="仍要把这个文件夹当作项目同步？" ;;
+    "refusing to sync a category folder") UI_T="拒绝同步分类目录" ;;
+    "no AGENTS.md here; the layout is recorded, but its block is not added")
+      UI_T="这里没有 AGENTS.md；已记录布局，但没有添加对应的块" ;;
     "Not initialized") UI_T="未初始化" ;;
     "Not configured") UI_T="未配置" ;;
     "None") UI_T="无" ;;
@@ -437,6 +449,11 @@ _i18n_zh_pattern() {
   fi
 
   # --- diagnostics card ------------------------------------------------------
+  if _i18n_m '^([0-9]+) nested repositories not ignored$'; then UI_T="${BASH_REMATCH[1]} 个嵌套仓库未被忽略"; return; fi
+  if _i18n_m '^of (/.*)$'; then UI_T="属于 ${BASH_REMATCH[1]}"; return; fi
+  if _i18n_m "^not ignored by the hub's git: (.*) \(add (.*) to \.gitignore\)$"; then
+    UI_T="hub 的 git 没有忽略 ${BASH_REMATCH[1]}（请把 ${BASH_REMATCH[2]} 加入 .gitignore）"; return
+  fi
   if _i18n_m '^detached at (.*)$'; then UI_T="游离于 ${BASH_REMATCH[1]}"; return; fi
   if _i18n_m '^Project v(.*) / CLI v(.*)$'; then
     UI_T="项目 v${BASH_REMATCH[1]} / CLI v${BASH_REMATCH[2]}"; return

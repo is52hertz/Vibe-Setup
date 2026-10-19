@@ -1249,6 +1249,18 @@ run_apply_mode() {
   local apply_lib="${SCRIPT_DIR}/lib/apply.sh"
 
   target_dir="$(pwd -P)"
+
+  # A folder that only groups independent repositories is never a project:
+  # syncing it would plant agent rules where no agent is ever started.
+  if [[ -z "${LAYOUT_CHOICE}" ]] && layout_looks_like_category "${target_dir}"; then
+    warn "This folder looks like a category of independent repositories, not a project."
+    warn "Run vibe-init --apply inside one of them instead."
+    if [[ "${ASSUME_DEFAULTS}" -eq 1 || ! -t 0 ]]; then
+      die "refusing to sync a category folder"
+    fi
+    ask_yes_no "Sync this folder as a project anyway?" "no" || exit 0
+  fi
+
   upgrade_safe_paths "${target_dir}" || die "unsafe upgrade paths"
   state_check_schema "${target_dir}" || die "cannot read project state"
   if [[ "${UPGRADE_ACTION}" != pending ]]; then upgrade_lock "${target_dir}" || die "upgrade is locked"; fi
@@ -1278,9 +1290,23 @@ run_apply_mode() {
     TEST_CHECKLIST_ENABLED="$(resolve_test_checklist)"
   fi
 
+  # The layout the project recorded, unless --layout adopts one now. Adopting
+  # adds the layout block directly, like a feature toggle; a member is also
+  # registered in its hub and shielded from it.
+  HUB_DIR="$(layout_hub_of "${target_dir}")"
+  LAYOUT="$(state_get "${target_dir}" layout)"
+  [[ -n "${LAYOUT}" ]] || LAYOUT="single"
+  if [[ -n "${LAYOUT_CHOICE}" ]]; then
+    if [[ "${LAYOUT_CHOICE}" == member && -z "${HUB_DIR}" ]]; then
+      die "--layout member needs a hub directly above this project"
+    fi
+    LAYOUT="${LAYOUT_CHOICE}"
+    STATE_SET_LAYOUT="${LAYOUT}"
+  fi
+
   # Apply mode never prunes profiles: the project's AI resolves that from the
   # codebase, which is also why --profile is rejected with --apply.
-  prepare_template_set "ask" "${TEMPLATE_INTEGRATIONS}" "${CC_WORKFLOW_ENABLED}" "${TEST_CHECKLIST_ENABLED}"
+  prepare_template_set "ask" "${TEMPLATE_INTEGRATIONS}" "${CC_WORKFLOW_ENABLED}" "${TEST_CHECKLIST_ENABLED}" "${LAYOUT}"
 
   ui_intro "vibe-init" "project orchestrator"
 
@@ -1316,6 +1342,15 @@ run_apply_mode() {
         ;;
     esac
   else
+    if [[ -n "${LAYOUT_CHOICE}" ]]; then
+      layout_adopt "${target_dir}" "${LAYOUT_CHOICE}"
+    fi
+    if [[ "${LAYOUT_CHOICE}" == member ]]; then
+      layout_register_member "${HUB_DIR}" "${target_dir}"
+      layout_shield_member "${HUB_DIR}" "${target_dir}"
+    elif [[ "${LAYOUT_CHOICE}" == hub ]]; then
+      layout_report_unignored "${target_dir}"
+    fi
     orchestrator_dashboard "${target_dir}"
   fi
 
@@ -1330,7 +1365,7 @@ main() {
 
   if [[ -n "${UPGRADE_ACTION}" ]]; then
     [[ "${APPLY_MODE}" -eq 1 ]] || die "upgrade actions require --apply"
-    [[ -z "${ON_EXISTS}${APPLY_FILES}${CC_WORKFLOW_CHOICE}${TEST_CHECKLIST_CHOICE}" ]] || die "upgrade actions cannot be combined with sync options"
+    [[ -z "${ON_EXISTS}${APPLY_FILES}${CC_WORKFLOW_CHOICE}${TEST_CHECKLIST_CHOICE}${LAYOUT_CHOICE}" ]] || die "upgrade actions cannot be combined with sync options"
     if [[ "${UPGRADE_ACTION}" == resolve ]]; then
       [[ -n "${UPGRADE_VALUE}" && -n "${UPGRADE_EXPECT}" && -n "${UPGRADE_RESOLUTION}" ]] || die "--resolve requires --expect and --resolution"
     fi
@@ -1370,16 +1405,25 @@ main() {
   fi
 
   if [[ -n "${LAYOUT_CHOICE}" ]]; then
-    case "$(printf '%s' "${LAYOUT_CHOICE}" | tr '[:upper:]' '[:lower:]')" in
-      single) ;;
-      hub)
-        # A hub holds documents: these flags ask for things it never gets.
-        [[ -z "${PROFILE}" ]] || die "--profile does not apply to a hub (it has no profile)"
-        [[ "$(normalize_yes_no "${TRELLIS_CHOICE:-no}" 2>/dev/null)" != yes ]] || die "--trellis yes does not apply to a hub"
-        [[ "$(normalize_yes_no "${TEST_CHECKLIST_CHOICE:-no}" 2>/dev/null)" != yes ]] || die "--test-checklist yes does not apply to a hub"
-        ;;
-      *) die "--layout must be single or hub" ;;
-    esac
+    LAYOUT_CHOICE="$(printf '%s' "${LAYOUT_CHOICE}" | tr '[:upper:]' '[:lower:]')"
+    if [[ "${APPLY_MODE}" -eq 1 ]]; then
+      # An existing project adopts a layout; leaving one is the user's edit.
+      case "${LAYOUT_CHOICE}" in
+        hub|member) ;;
+        *) die "with --apply, --layout takes hub or member (to adopt that layout)" ;;
+      esac
+    else
+      case "${LAYOUT_CHOICE}" in
+        single) ;;
+        hub)
+          # A hub holds documents: these flags ask for things it never gets.
+          [[ -z "${PROFILE}" ]] || die "--profile does not apply to a hub (it has no profile)"
+          [[ "$(normalize_yes_no "${TRELLIS_CHOICE:-no}" 2>/dev/null)" != yes ]] || die "--trellis yes does not apply to a hub"
+          [[ "$(normalize_yes_no "${TEST_CHECKLIST_CHOICE:-no}" 2>/dev/null)" != yes ]] || die "--test-checklist yes does not apply to a hub"
+          ;;
+        *) die "--layout must be single or hub" ;;
+      esac
+    fi
   fi
 
   if [[ "${PROJECT_NAME_POSITIONAL}" -eq 1 && "${APPLY_MODE}" -eq 1 ]]; then

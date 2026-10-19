@@ -678,6 +678,54 @@ else
   ko "--layout single inside a hub opts out of membership" "registered anyway"
 fi
 
+# --- --apply in a category folder is refused -------------------------------
+# Unrelated repositories grouped under one folder, where no agent is started:
+# syncing it would plant agent rules where nobody reads them.
+d="$(sandbox)"
+mkdir -p "${d}/one/.git" "${d}/two/.git"
+vi "${d}" --apply -y
+rc_is "--apply in a category folder is refused" 1
+has   "and says where to run it instead" "Run vibe-init --apply inside one of them instead."
+[[ ! -e "${d}/AGENTS.md" && ! -e "${d}/.vibe-init" ]] && ok "and writes nothing there" \
+  || ko "and writes nothing there" "$(ls -A "${d}" | tr '\n' ' ')"
+
+# --- an existing project adopts the hub layout --------------------------------
+d="$(sandbox)"
+vi "${d}" -y
+mkdir -p "${d}/Inner/.git"
+vi "${d}" --apply -y --layout hub
+rc_is "an existing project adopts the hub layout" 0
+grep -qF '<LAYOUT id="hub">' "${d}/AGENTS.md" && ok "adopting adds the hub block" \
+  || ko "adopting adds the hub block" "no LAYOUT block"
+has "a nested repository the hub's git would track is named" "not ignored by the hub's git: Inner/"
+[[ ! -e "${d}/docs" ]] && ok "adopting writes no docs skeleton over the project" \
+  || ko "adopting writes no docs skeleton over the project" "docs/ created"
+vi "${d}" --apply -y
+has "the card shows the layout and what it still needs" "1 nested repositories not ignored"
+
+vi "${d}" --apply -y --layout single
+rc_is "--apply does not take --layout single" 1
+vi "${d}" --apply -y --layout member
+rc_is "--layout member needs a hub above" 1
+
+# --- an existing project inside a hub joins it --------------------------------
+# Gamma was created inside the hub with --layout single. Give it a frozen
+# review first: a file under review is skipped by the sync, which must not keep
+# an explicit adoption from adding its block.
+t="$(template_copy)"
+inject_above "${hub}/Gamma/AGENTS.md" "</CORE_RULES>" "- **MY OWN RULE**: local."
+inject_above "${t}/blocks/core_rules.md" "</CORE_RULES>" "- **LATER RULE**: upstream."
+vi "${hub}/Gamma" --apply -y --template-dir "${t}"
+has "a plain apply inside a hub suggests joining it" "inside a hub; --apply --layout member joins it"
+vi "${hub}/Gamma" --apply -y --layout member --template-dir "${t}"
+rc_is "an existing project joins its hub" 0
+grep -qF '<LAYOUT id="member">' "${hub}/Gamma/AGENTS.md" && ok "joining adds the member block despite a frozen review" \
+  || ko "joining adds the member block despite a frozen review" "no LAYOUT block"
+grep -qxF '/Gamma/' "${hub}/.gitignore" && ok "joining registers the member in the hub" \
+  || ko "joining registers the member in the hub" "$(cat "${hub}/.gitignore")"
+grep -qF "$(printf 'layout\tmember')" "${hub}/Gamma/.vibe-init/manifest" && ok "and records it as a member" \
+  || ko "and records it as a member" "$(grep '^layout' "${hub}/Gamma/.vibe-init/manifest")"
+
 # --- --apply --cc-workflow yes wires CLAUDE.md, not just the documents -------
 # A missing optional block is normally an opt-out the sync must respect, so it
 # never inserts one on its own. An explicit --cc-workflow yes is the opposite of

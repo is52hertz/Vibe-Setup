@@ -4,9 +4,10 @@
 # Sourced by vibe-init.sh (not run standalone). Relies on helpers and globals
 # defined there: info, warn, die, ensure_dir, ask_yes_no, ask_value, run_cmd,
 # run_in_dir, DRY_RUN, ASSUME_DEFAULTS, TEMPLATE_DIR, TEMPLATE_SET_LABEL,
-# TEMPLATE_FILES, TEMPLATE_INTEGRATIONS, CC_WORKFLOW_ENABLED, APPLY_FILES,
-# ON_EXISTS — plus lib/ui.sh, lib/block_engine.sh, lib/state.sh, lib/sync.sh
-# and lib/trellis.sh.
+# TEMPLATE_FILES, TEMPLATE_INTEGRATIONS, CC_WORKFLOW_ENABLED,
+# TEST_CHECKLIST_ENABLED, LAYOUT, HUB_DIR, APPLY_FILES, ON_EXISTS — plus
+# lib/ui.sh, lib/block_engine.sh, lib/state.sh, lib/sync.sh, lib/trellis.sh
+# and lib/layout.sh.
 #
 # Two shapes, one for each way the command is used:
 #
@@ -43,6 +44,9 @@ if ! command -v hash_file >/dev/null 2>&1; then
 fi
 if ! command -v merge_verdict >/dev/null 2>&1; then
   [[ -f "${SCRIPT_DIR}/lib/sync.sh" ]] && . "${SCRIPT_DIR}/lib/sync.sh"
+fi
+if ! command -v layout_hub_of >/dev/null 2>&1; then
+  [[ -f "${SCRIPT_DIR}/lib/layout.sh" ]] && . "${SCRIPT_DIR}/lib/layout.sh"
 fi
 
 # Files chosen for this apply run (relative paths). Declared so expansions are
@@ -717,6 +721,7 @@ show_project_diagnostics() {
   ui_section "Project environment"
   if upgrade_paused "${project_dir}"; then ui_kv_state "Upgrades" off "paused"; fi
   ui_kv_state "vibe-init"   "${tracked_level}" "${tracked_state}" "${tracked_detail}"
+  layout_diagnostics_row "${project_dir}"
   ui_kv_state "Git repo"    "${git_level}"     "${git_state}"     "${git_detail}"
   ui_kv_state "Trellis"     "${trellis_level}" "${trellis_state}" "${trellis_detail}"
   ui_kv_state "Platforms"   "${plat_level}"    "${plat_state}"    "${plat_detail}"
@@ -1102,7 +1107,7 @@ remove_trellis_block() {
     ui_info "dry-run: remove <INTEGRATION id=\"trellis\"> from ${agents}"
   elif remove_block "${agents}" "INTEGRATION" "trellis"; then
     TEMPLATE_INTEGRATIONS=""
-    prepare_template_set "ask" "${TEMPLATE_INTEGRATIONS}" "${CC_WORKFLOW_ENABLED}"
+    prepare_template_set "ask" "${TEMPLATE_INTEGRATIONS}" "${CC_WORKFLOW_ENABLED}" "${TEST_CHECKLIST_ENABLED:-0}" "${LAYOUT:-single}"
     ui_ok "Removed the Trellis integration block from AGENTS.md."
   else
     ui_error "Could not remove the block; AGENTS.md was left untouched."
@@ -1125,7 +1130,7 @@ add_trellis_block() {
     ui_info "dry-run: append <INTEGRATION id=\"trellis\"> to ${agents}"
   elif append_block_if_missing "${agents}" "INTEGRATION" "trellis" "${block}"; then
     TEMPLATE_INTEGRATIONS="trellis"
-    prepare_template_set "ask" "${TEMPLATE_INTEGRATIONS}" "${CC_WORKFLOW_ENABLED}"
+    prepare_template_set "ask" "${TEMPLATE_INTEGRATIONS}" "${CC_WORKFLOW_ENABLED}" "${TEST_CHECKLIST_ENABLED:-0}" "${LAYOUT:-single}"
     record_block_as_written "${project_dir}" "AGENTS.md" "INTEGRATION" "trellis"
     ui_ok "Added the Trellis integration block to AGENTS.md."
   else
