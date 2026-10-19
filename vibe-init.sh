@@ -21,11 +21,15 @@ TEMPLATE_ROOT="${SCRIPT_DIR}/templates"
 # Recorded into every scaffolded project (.vibe-init/manifest) and shown in the
 # apply diagnostics, so a project can say which vibe-init last touched it.
 # Bump the minor for a template or behavior change projects should pick up.
-VIBE_INIT_VERSION="1.1.0"
+VIBE_INIT_VERSION="1.2.0"
 
 ASSUME_DEFAULTS=0
 DRY_RUN=0
 APPLY_MODE=0
+UPGRADE_ACTION=""
+UPGRADE_VALUE=""
+UPGRADE_EXPECT=""
+UPGRADE_RESOLUTION=""
 # Whether the scaffolded project gets CC-Cowork-Workflow.md and the CLAUDE.md
 # block that points at it. Empty CHOICE means "ask" (default no); --cc-workflow
 # yes|no sets it non-interactively. In apply mode an unset choice follows what
@@ -45,6 +49,7 @@ TEST_CHECKLIST_ENABLED=0
 [[ -f "${SCRIPT_DIR}/lib/block_engine.sh" ]] && . "${SCRIPT_DIR}/lib/block_engine.sh"
 [[ -f "${SCRIPT_DIR}/lib/state.sh" ]] && . "${SCRIPT_DIR}/lib/state.sh"
 [[ -f "${SCRIPT_DIR}/lib/sync.sh" ]] && . "${SCRIPT_DIR}/lib/sync.sh"
+[[ -f "${SCRIPT_DIR}/lib/upgrade.sh" ]] && . "${SCRIPT_DIR}/lib/upgrade.sh"
 [[ -f "${SCRIPT_DIR}/lib/trellis.sh" ]] && . "${SCRIPT_DIR}/lib/trellis.sh"
 # Optional comma/space separated subset of TEMPLATE_FILES to copy in apply mode.
 # Empty means "ask interactively" (or "all" under -y / non-TTY). Requires --apply.
@@ -110,6 +115,13 @@ TRELLIS_PLATFORM_ARGS=()
 
 # Remove the materialized template set. Registered on EXIT, so an interrupted or
 # failed run does not leave a staging directory behind.
+cleanup_upgrade_run() {
+  if [[ -n "${UPGRADE_BACKUP:-}" ]]; then
+    upgrade_finish "${UPGRADE_BACKUP%/.vibe-init/backups/*}"
+  fi
+  upgrade_unlock
+}
+
 cleanup_template_stage() {
   if [[ -n "${TEMPLATE_STAGE_DIR}" && -d "${TEMPLATE_STAGE_DIR}" ]]; then
     rm -rf "${TEMPLATE_STAGE_DIR}"
@@ -132,6 +144,7 @@ prepare_ui_run_dir() {
 }
 
 cleanup_on_exit() {
+  cleanup_upgrade_run
   cleanup_template_stage
   if [[ -n "${UI_RUN_DIR}" && -d "${UI_RUN_DIR}" ]]; then
     rm -rf "${UI_RUN_DIR}"
@@ -178,13 +191,22 @@ Options:
                            project) instead of scaffolding a new one. Opens the orchestrator
                            dashboard: project diagnostics, then template sync, Trellis
                            management, and feature toggles. The set is assembled to match the
-                           project (Trellis block when it is Trellis-managed). Existing files
-                           are left untouched; the copy is written as <name>.template instead.
+                           project (Trellis block when it is Trellis-managed). Untouched
+                           managed content is refreshed; conflicts become explicit reviews.
   --files "A,B"            Apply only this subset of the managed files (comma/space separated,
                            e.g. "AGENTS.md,CLAUDE.md") instead of prompting. Requires --apply.
   --on-exists MODE         How --apply resolves a file that already exists, without prompting:
                            overwrite | template (write <name>.template) | skip. Default: ask
                            per file (template under -y / non-TTY). Requires --apply.
+  --pending               List frozen upgrade reviews and current fingerprints. Requires --apply.
+  --resolve ID            Acknowledge a reviewed file; requires --expect and --resolution.
+  --expect HASH           Fingerprint of the project file you reviewed (or absent).
+  --resolution MODE       merged | keep (project version this time) | converted (format only).
+  --pause-updates          Pause template upgrades for this project. Requires --apply.
+  --resume-updates         Resume; the next --apply checks for updates.
+  --self-manage SCOPE      Keep FILE or FILE:TAG[:ID] under project control.
+  --follow SCOPE           Follow template updates again for that scope.
+  --rollback ID            Restore an upgrade snapshot if its files have not changed since.
   -y, --yes                Accept safe defaults for prompts.
   --dry-run                Print actions without writing files or running installers.
   -h, --help               Show this help.
@@ -196,13 +218,11 @@ Behavior:
   - Existing project files are skipped, not overwritten.
   - Asks whether to run git init in the new project (default yes); skipped when
     the project is already a git repository. Not done in --apply mode.
-  - With --apply: lists the managed files (and whether each already exists) and
-    asks which to copy; --files preselects a subset and -y / non-TTY copies all.
-    Copies into the current directory. For a file that already exists you choose
-    per file: overwrite, write <name>.template, or skip (default template, also
-    the -y / non-TTY behavior); --on-exists sets this for the whole run. Does not
-    install or initialize Trellis. Notes (but does not act on) a target that is
-    not a git repository.
+  - With --apply: safely sync the current project; --files selects a subset.
+    Local customizations stay in place. Conflicts freeze a .template proposal
+    until --resolve explicitly acknowledges it. --on-exists is an explicit
+    legacy copy override. Paused projects are never synced automatically.
+    Ordinary template sync does not install or initialize Trellis.
   - Shift+L in any interactive menu switches the interface between English and
     Simplified Chinese for the rest of the run (in a plain numbered menu, type L
     and Enter). VIBE_INIT_LANG=zh starts in Chinese. Agent prompts stay English.
@@ -326,6 +346,22 @@ while [[ $# -gt 0 ]]; do
       TEMPLATE_ROOT="${1#*=}"
       require_arg "--template-dir" "${TEMPLATE_ROOT}"
       shift
+      ;;
+    --pending|--pause-updates|--resume-updates)
+      [[ -z "${UPGRADE_ACTION}" ]] || die "choose one upgrade action"
+      UPGRADE_ACTION="${1#--}"
+      shift
+      ;;
+    --resolve|--self-manage|--follow|--rollback)
+      [[ -z "${UPGRADE_ACTION}" ]] || die "choose one upgrade action"
+      require_arg "$1" "${2:-}"
+      UPGRADE_ACTION="${1#--}"; UPGRADE_VALUE="$2"
+      shift 2
+      ;;
+    --expect|--resolution)
+      require_arg "$1" "${2:-}"
+      if [[ "$1" == --expect ]]; then UPGRADE_EXPECT="$2"; else UPGRADE_RESOLUTION="$2"; fi
+      shift 2
       ;;
     --apply)
       APPLY_MODE=1
@@ -1102,6 +1138,8 @@ record_scaffold_state() {
     fi
     [[ -f "${source_of_truth}" ]] || continue
     file_hash="$(hash_file "${source_of_truth}")" || continue
+    [[ -f "${TEMPLATE_DIR}/${rel}" ]] || continue
+    [[ "${file_hash}" == "$(hash_file "${TEMPLATE_DIR}/${rel}")" ]] || continue
     state_record_file "${rel}" "${file_hash}"
     state_record_all_blocks "${source_of_truth}" "${rel}"
   done
@@ -1154,6 +1192,9 @@ run_apply_mode() {
   local apply_lib="${SCRIPT_DIR}/lib/apply.sh"
 
   target_dir="$(pwd -P)"
+  upgrade_safe_paths "${target_dir}" || die "unsafe upgrade paths"
+  state_check_schema "${target_dir}" || die "cannot read project state"
+  if [[ "${UPGRADE_ACTION}" != pending ]]; then upgrade_lock "${target_dir}" || die "upgrade is locked"; fi
 
   # The existing project's shape decides the set, so apply mode never offers a
   # file the project has no use for: the Trellis integration block only for a
@@ -1188,7 +1229,36 @@ run_apply_mode() {
   # shellcheck source=lib/apply.sh
   . "${apply_lib}"
 
-  orchestrator_dashboard "${target_dir}"
+  if [[ -n "${UPGRADE_ACTION}" ]]; then
+    case "${UPGRADE_ACTION}" in
+      pending) upgrade_show_pending "${target_dir}" ;;
+      resolve) upgrade_resolve "${target_dir}" "${UPGRADE_VALUE}" "${UPGRADE_EXPECT}" "${UPGRADE_RESOLUTION}" ;;
+      rollback) upgrade_rollback "${target_dir}" "${UPGRADE_VALUE}" ;;
+      pause-updates|resume-updates)
+        upgrade_begin "${target_dir}"
+        if [[ "${UPGRADE_ACTION}" == pause-updates ]]; then
+          upgrade_set_policy "${target_dir}" updates paused
+        else
+          upgrade_set_policy "${target_dir}" updates active
+        fi
+        upgrade_finish "${target_dir}"
+        info "${UPGRADE_ACTION}: saved; no template files changed"
+        ;;
+      self-manage|follow)
+        upgrade_validate_scope "${target_dir}" "${UPGRADE_VALUE}" || die "invalid ownership scope"
+        upgrade_begin "${target_dir}"
+        if [[ "${UPGRADE_ACTION}" == self-manage ]]; then
+          upgrade_set_policy "${target_dir}" "${UPGRADE_VALUE}" local
+        else
+          upgrade_set_policy "${target_dir}" "${UPGRADE_VALUE}" follow
+        fi
+        upgrade_finish "${target_dir}"
+        info "${UPGRADE_ACTION}: ${UPGRADE_VALUE}; pending reviews still require explicit acknowledgement"
+        ;;
+    esac
+  else
+    orchestrator_dashboard "${target_dir}"
+  fi
 
   ui_outro "done  ${target_dir}"
 }
@@ -1199,6 +1269,16 @@ main() {
   local install_trellis=0
   local profile=""
 
+  if [[ -n "${UPGRADE_ACTION}" ]]; then
+    [[ "${APPLY_MODE}" -eq 1 ]] || die "upgrade actions require --apply"
+    [[ -z "${ON_EXISTS}${APPLY_FILES}${CC_WORKFLOW_CHOICE}${TEST_CHECKLIST_CHOICE}" ]] || die "upgrade actions cannot be combined with sync options"
+    if [[ "${UPGRADE_ACTION}" == resolve ]]; then
+      [[ -n "${UPGRADE_VALUE}" && -n "${UPGRADE_EXPECT}" && -n "${UPGRADE_RESOLUTION}" ]] || die "--resolve requires --expect and --resolution"
+    fi
+  fi
+  if [[ -n "${UPGRADE_EXPECT}${UPGRADE_RESOLUTION}" && "${UPGRADE_ACTION}" != resolve ]]; then
+    die "--expect and --resolution require --resolve"
+  fi
   prepare_ui_run_dir
 
   if [[ -n "${APPLY_FILES}" && "${APPLY_MODE}" -eq 0 ]]; then

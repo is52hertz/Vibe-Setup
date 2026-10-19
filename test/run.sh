@@ -3,6 +3,7 @@
 #
 #   test/dry-run.sh   drives the CLI and asserts on what it prints
 #   test/units.sh     exercises the libraries under lib/ directly
+#   test/upgrades.sh  exercises upgrade lifecycle transitions and recovery
 #
 # Run: ./test/run.sh   (exit 0 = all pass, 1 = some failed)
 
@@ -13,6 +14,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 SUITES=(
   "dry-run.sh"
   "units.sh"
+  "upgrades.sh"
 )
 
 FAILED=0

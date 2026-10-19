@@ -15,8 +15,8 @@
 # Format: tab-separated, one record per line, so awk can read it and no JSON
 # parser is needed (the tool depends on nothing beyond bash, coreutils and awk).
 #
-#   schema  1
-#   version 1.1.0
+#   schema  2
+#   version 1.2.0  (last tool used, not proof that reviews are resolved)
 #   file    AGENTS.md                       <hash>
 #   block   AGENTS.md   CORE_RULES          <hash>
 #   block   AGENTS.md   PROFILE     tool    <hash>
@@ -24,16 +24,15 @@
 # The file is written by the tool and read by the tool; it is not documentation
 # and is not meant to be edited by hand.
 #
-# Beside it, .vibe-init/pending/<rel> keeps the exact template handed to the
-# user's AI agent as <rel>.template. The merge happens outside this tool, and
-# the only thing that comes back is the agent deleting that .template, as the
-# prompt asks. Once it is gone, the kept copy is the version the user merged
-# against — the right merge base from then on (see lib/sync.sh).
+# base/<hash> stores immutable upstream text for portable three-way reviews.
+# pending/<rel> freezes a proposal until explicit acknowledgement. Deleting the
+# .template never changes the baseline. Policy and bases should be committed;
+# pending reviews, recovery snapshots and locks remain local.
 #
 # Compatible with macOS Bash 3.2.
 
 VIBE_STATE_DIR_NAME=".vibe-init"
-VIBE_STATE_SCHEMA=1
+VIBE_STATE_SCHEMA=2
 
 # Records staged by this run, each already tab-joined. Flushed by state_flush,
 # which merges them into whatever the manifest already holds.
@@ -130,13 +129,6 @@ state_block_hash() {
     '$1 == "block" && $2 == r && $3 == t && $4 == i { print $5; exit }' "${manifest}"
 }
 
-# True when a template was handed out as <rel>.template and the agent is done
-# with it: the kept copy exists and the .template beside the file is gone.
-# Usage: state_pending_resolved <project_dir> <relative_path>
-state_pending_resolved() {
-  [[ -f "$(state_pending_path "$1" "$2")" && ! -e "${1}/${2}.template" ]]
-}
-
 # -----------------------------------------------------------------------------
 # Writing
 # -----------------------------------------------------------------------------
@@ -170,25 +162,38 @@ state_record_all_blocks() {
 # Keep the template just handed out as <rel>.template. Honors --dry-run.
 # Usage: state_save_pending <project_dir> <relative_path> <template_file>
 state_save_pending() {
-  local pending=""
-
+  local project_dir="$1" rel="$2" src="$3" pending="" kind="merge" marker="" version="unknown"
   [[ "${DRY_RUN}" -eq 1 ]] && return 0
-  pending="$(state_pending_path "$1" "$2")"
-  mkdir -p "$(dirname -- "${pending}")" && cp "$3" "${pending}" \
-    || warn "could not keep the handed-out template for $2"
+  pending="$(state_pending_path "${project_dir}" "${rel}")"
+  # Freeze a review until it is explicitly resolved. Later releases wait.
+  if [[ ! -f "${pending}" ]]; then
+    mkdir -p "$(dirname -- "${pending}")"
+    cp "${src}" "${pending}.tmp.$$" || return 1
+    mv "${pending}.tmp.$$" "${pending}" || return 1
+    version="${VIBE_INIT_VERSION}"
+  fi
+  if [[ ! -f "${pending}.meta" ]]; then
+    marker="$(modern_marker_tag "${rel}")"
+    if [[ -n "${marker}" && -f "${project_dir}/${rel}" ]] && ! has_block "${project_dir}/${rel}" "${marker}"; then kind="convert"; fi
+    {
+      printf 'target\t%s\n' "$(hash_file "${pending}")"
+      printf 'version\t%s\n' "${version}"
+      printf 'kind\t%s\n' "${kind}"
+    } > "${pending}.meta.tmp.$$" || return 1
+    mv "${pending}.meta.tmp.$$" "${pending}.meta" || return 1
+  fi
 }
 
 # Forget the kept template for <rel>, once it has become the merge base.
 # Usage: state_drop_pending <project_dir> <relative_path>
 state_drop_pending() {
   [[ "${DRY_RUN}" -eq 1 ]] && return 0
-  rm -f "$(state_pending_path "$1" "$2")"
+  rm -f "$(state_pending_path "$1" "$2")" "$(state_pending_path "$1" "$2").meta"
 }
 
 # Write the staged records into the project's manifest, keeping every record
-# this run did not touch. Honors --dry-run. Also makes sure a git-tracked
-# project ignores the directory, so the tool's private bookkeeping never turns
-# up in the user's diffs.
+# this run did not touch. Honors --dry-run. Only private upgrade artifacts are
+# ignored; the manifest, policy and upstream base objects should be committed.
 #
 # A run with nothing to record still writes the manifest. It used to return
 # early instead, and an old project whose every file needed review or a format
@@ -200,6 +205,7 @@ state_flush() {
   local dir="" manifest="" tmp_new="" tmp_out="" rec=""
   local profile="" integrations="" cc="" checklist="" trellis="" created=""
 
+  state_check_schema "${project_dir}" || return 1
   dir="$(state_dir "${project_dir}")"
   manifest="$(state_path "${project_dir}")"
 
@@ -225,7 +231,7 @@ state_flush() {
   created="$(state_get "${project_dir}" created)"
   [[ -n "${created}" ]] || created="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
-  mkdir -p "${dir}" || { warn "could not create ${dir}; skipping state record"; return; }
+  mkdir -p "${dir}" || { warn "could not create ${dir}; skipping state record"; return 1; }
 
   tmp_new="${manifest}.new.$$"
   tmp_out="${manifest}.out.$$"
@@ -275,46 +281,96 @@ state_flush() {
     } | sort
   } > "${tmp_out}"
 
-  mv "${tmp_out}" "${manifest}"
+  state_capture_bases "${project_dir}" "${tmp_new}" || {
+    rm -f "${tmp_new}" "${tmp_out}"
+    return 1
+  }
+  if [[ -f "${manifest}" ]] && cmp -s <(awk -F'\t' '$1 != "updated"' "${manifest}") <(awk -F'\t' '$1 != "updated"' "${tmp_out}"); then
+    rm -f "${tmp_out}"
+  else
+    mv "${tmp_out}" "${manifest}"
+  fi
   rm -f "${tmp_new}"
   STATE_RECORDS=()
 
   ensure_state_gitignored "${project_dir}"
 }
 
-# Make sure a git repository ignores the state directory. Detection only for a
-# non-repo: there is nothing to ignore, and vibe-init does not create a
+# Ignore private artifacts while allowing portable state to be committed.
+# For a non-repo there is nothing to ignore, and vibe-init does not create a
 # .gitignore for a project that is not under version control.
 # Usage: ensure_state_gitignored <project_dir>
 ensure_state_gitignored() {
-  local project_dir="$1"
-  local gitignore="${project_dir}/.gitignore"
-  local entry="${VIBE_STATE_DIR_NAME}/"
-
+  local project_dir="$1" gitignore="${1}/.gitignore" tmp="" rule=""
   command -v git >/dev/null 2>&1 || return 0
   git -C "${project_dir}" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
-
-  # Already ignored — by our own line or by anything else the user wrote.
-  if [[ -f "${gitignore}" ]] && grep -qxF -- "${entry}" "${gitignore}"; then
-    return 0
-  fi
-  if git -C "${project_dir}" check-ignore -q "${VIBE_STATE_DIR_NAME}" 2>/dev/null; then
-    return 0
-  fi
-
   if [[ "${DRY_RUN}" -eq 1 ]]; then
-    info "dry-run: add ${entry} to ${gitignore}"
+    info "dry-run: keep manifest, policy and base trackable; ignore local upgrade artifacts"
     return 0
   fi
-
-  # A file that does not end in a newline would otherwise swallow our entry
-  # into its last line.
-  if [[ -s "${gitignore}" ]] && [[ -n "$(tail -c 1 "${gitignore}")" ]]; then
-    printf '\n' >> "${gitignore}"
+  tmp="${gitignore}.vibe.$$"
+  # Migrate only the exact ignore rule emitted by schema 1.
+  if [[ -f "${gitignore}" ]]; then
+    awk '$0 != ".vibe-init/" && $0 != "# vibe-init bookkeeping (local; safe to delete)" { print }' "${gitignore}" > "${tmp}"
+  else
+    : > "${tmp}"
   fi
-  {
-    printf '\n# vibe-init bookkeeping (local; safe to delete)\n'
-    printf '%s\n' "${entry}"
-  } >> "${gitignore}"
-  info "added ${entry} to .gitignore"
+  for rule in '/.vibe-init/pending/' '/.vibe-init/backups/' '/.vibe-init/lock/'; do
+    grep -qxF -- "${rule}" "${tmp}" || printf '\n%s\n' "${rule}" >> "${tmp}"
+  done
+  if [[ -f "${gitignore}" ]] && cmp -s "${tmp}" "${gitignore}"; then rm -f "${tmp}"; else mv "${tmp}" "${gitignore}"; fi
+}
+
+# Refuse future schemas instead of rewriting them with an older tool.
+state_check_schema() {
+  local schema=""
+  schema="$(state_get "$1" schema)"
+  case "${schema}" in
+    ''|1|2) return 0 ;;
+    *) warn "unsupported state schema: ${schema}; use a newer vibe-init"; return 1 ;;
+  esac
+}
+
+# Immutable objects contain upstream text only, never the project's customized
+# result. Hash-only schema-1 records remain useful even without their object.
+state_store_base() {
+  local dir="${1}/.vibe-init/base" hash="$2" src="$3"
+  [[ "${DRY_RUN}" -eq 1 ]] && return 0
+  [[ "$(hash_file "${src}")" == "${hash}" ]] || return 1
+  mkdir -p "${dir}" || return 1
+  if [[ -f "${dir}/${hash}" ]]; then
+    [[ "$(hash_file "${dir}/${hash}")" == "${hash}" ]] || { warn "corrupt upstream base object: ${hash}"; return 1; }
+  else
+    cp "${src}" "${dir}/${hash}.tmp.$$" || return 1
+    mv "${dir}/${hash}.tmp.$$" "${dir}/${hash}" || return 1
+  fi
+}
+
+state_capture_bases() {
+  local record=""
+  local project_dir="$1" records="$2" kind="" rel="" tag="" id="" hash="" src="" frag=""
+  [[ -n "${TEMPLATE_DIR:-}" ]] || return 0
+  while IFS= read -r record; do
+    kind="$(printf '%s\n' "${record}" | cut -f1)"
+    rel="$(printf '%s\n' "${record}" | cut -f2)"
+    src="${TEMPLATE_DIR}/${rel}"
+    [[ -f "${src}" ]] || continue
+    if [[ "${kind}" == "file" ]]; then
+      hash="$(printf '%s\n' "${record}" | cut -f3)"
+      if [[ "$(hash_file "${src}")" == "${hash}" ]]; then
+        state_store_base "${project_dir}" "${hash}" "${src}" || return 1
+      fi
+    else
+      tag="$(printf '%s\n' "${record}" | cut -f3)"
+      id="$(printf '%s\n' "${record}" | cut -f4)"
+      hash="$(printf '%s\n' "${record}" | cut -f5)"
+      if [[ "$(hash_block "${src}" "${tag}" "${id}" || true)" == "${hash}" ]]; then
+        frag="$(mktemp "${TMPDIR:-/tmp}/vibe-base.XXXXXX")"
+        extract_block "${src}" "${tag}" "${id}" > "${frag}"
+        state_store_base "${project_dir}" "${hash}" "${frag}" || { rm -f "${frag}"; return 1; }
+        rm -f "${frag}"
+      fi
+    fi
+  done < "${records}"
+  return 0
 }

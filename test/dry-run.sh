@@ -214,7 +214,7 @@ has   "conversion prompt names the target tags" "<METADATA>"
 has   "conversion prompt covers the anchors"    "PROFILE:service START"
 has   "conversion prompt keeps my content"      "do not rewrite, shorten"
 hasnt "legacy pair absent from merge prompt"    "Bring my files up to date"
-has   "conversion names the merge round after it" "once the conversion is done and the .template files are deleted"
+has   "conversion names the merge round after it" "once the conversion is explicitly acknowledged"
 has   "diagnostics name both rounds"            "then sync again to merge"
 has   "nothing to record still writes the manifest" "dry-run: write .vibe-init/manifest"
 
@@ -227,7 +227,7 @@ has   "diagnostics see the modern format"     "Modern (<TAG> format)"
 hasnt "modern target gets no upgrade hint"    "Format upgrade"
 has   "modern target gets the merge prompt"   "Bring my files up to date"
 hasnt "modern target gets no conversion prompt" "Restructure my files into the new"
-has   "merge prompt names its completion signal" "how vibe-init knows the merge is done"
+has   "merge prompt names its completion signal" "--resolve ID --expect HASH"
 hasnt "a modern run names no second round"     "once the conversion is done"
 
 # --- apply: mixed pair splits the two prompts -------------------------------
@@ -414,7 +414,7 @@ if [[ -f "${d}/.vibe-init/manifest" ]]; then
 else
   ko "a scaffold records its state" ".vibe-init/manifest was not written"
 fi
-if grep -qxF "$(printf 'version\t1.1.0')" "${d}/.vibe-init/manifest"; then
+if grep -qxF "$(printf 'version\t1.2.0')" "${d}/.vibe-init/manifest"; then
   ok "the manifest stamps the tool version"
 else
   ko "the manifest stamps the tool version" "$(cat "${d}/.vibe-init/manifest" 2>/dev/null | head -5)"
@@ -425,10 +425,10 @@ else
   ko "the manifest records blocks, not just files" "no block record for CORE_RULES"
 fi
 
-# The manifest is local bookkeeping, so a repository must ignore it.
+# Private upgrade artifacts are ignored; the manifest remains trackable.
 d="$(sandbox)"
 vi "${d}" --trellis no -y
-if [[ -f "${d}/.gitignore" ]] && grep -qxF '.vibe-init/' "${d}/.gitignore"; then
+if [[ -f "${d}/.gitignore" ]] && grep -qxF '/.vibe-init/pending/' "${d}/.gitignore"; then
   ok "git init is followed by a .gitignore entry"
 else
   ko "git init is followed by a .gitignore entry" "$(cat "${d}/.gitignore" 2>/dev/null)"
@@ -459,7 +459,7 @@ if [[ -z "$(find "${d}" -name '*.template' -print -quit)" ]]; then
 else
   ko "an unchanged project leaves no .template on disk" "$(find "${d}" -name '*.template')"
 fi
-has "diagnostics report the tool and the project version" "v1.1.0 (project tracked at v1.1.0)"
+has "diagnostics report the tool and the project version" "v1.2.0 (last tool v1.2.0; 0 pending review(s))"
 hasre "diagnostics report CLAUDE.md's format"             "CLAUDE.md +.*Modern"
 
 d="$(sandbox)"
@@ -571,11 +571,21 @@ else
 fi
 
 # Stand in for the agent: wrap the template's block around the user's text,
-# take the template's settings, and delete the .template files.
+# take the template's settings, then acknowledge each review with the exact
+# command --pending prints — deleting a .template is not a completion signal.
 { sed -n '/^<CLAUDE_BASE>$/,/^<\/CLAUDE_BASE>$/p' "${d}/CLAUDE.md.template"
   printf '\n'; cat "${d}/claude.orig"; } > "${d}/CLAUDE.md"
 mv "${d}/.claude/settings.json.template" "${d}/.claude/settings.json"
 rm "${d}/CLAUDE.md.template"
+vi "${d}" --apply --pending
+RESOLVES="$(printf '%s\n' "${OUT}" | sed -n 's/.*resolve after review: vibe-init //p')"
+is "--pending prints one resolve command per review" \
+  "$(printf '%s\n' "${RESOLVES}" | grep -c -- '--resolve')" 2
+while IFS= read -r cmd; do
+  [[ -n "${cmd}" ]] || continue
+  IFS=' ' read -r -a argv <<< "${cmd}"
+  vi "${d}" "${argv[@]}"
+done <<< "${RESOLVES}"
 vi "${d}" --apply -y
 has   "after the agent's round the project is settled" "Everything is up to date"
 hasnt "and nothing is handed out again"                ".template"
