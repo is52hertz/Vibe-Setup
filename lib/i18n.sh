@@ -411,6 +411,12 @@ _i18n_zh_pattern() {
   if _i18n_m '^refreshed (.*) in (.*)$'; then
     UI_T="已刷新 ${BASH_REMATCH[2]} 中的 ${BASH_REMATCH[1]}"; return
   fi
+  if _i18n_m '^added (<[A-Z_]+.*>) to (.*)$'; then
+    UI_T="已向 ${BASH_REMATCH[2]} 添加 ${BASH_REMATCH[1]}"; return
+  fi
+  if _i18n_m '^could not add (<[A-Z_]+.*>) to (.*)$'; then
+    UI_T="无法向 ${BASH_REMATCH[2]} 添加 ${BASH_REMATCH[1]}"; return
+  fi
   if _i18n_m '^could not refresh (.*) in (.*)$'; then
     UI_T="无法刷新 ${BASH_REMATCH[2]} 中的 ${BASH_REMATCH[1]}"; return
   fi

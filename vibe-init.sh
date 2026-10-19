@@ -1208,6 +1208,8 @@ run_apply_mode() {
   fi
   if [[ -n "${CC_WORKFLOW_CHOICE}" ]]; then
     CC_WORKFLOW_ENABLED="$(resolve_cc_workflow)"
+    # Asked for by name, so its CLAUDE.md block is not an opt-out to respect.
+    [[ "${CC_WORKFLOW_ENABLED}" -eq 1 ]] && SYNC_REQUESTED_BLOCKS="FEATURE:cc-workflow"
   fi
   # Same rule for the checklist, and by the file rather than the manifest: a
   # project scaffolded before the checklist was optional has no such header,

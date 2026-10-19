@@ -592,6 +592,24 @@ hasnt "and nothing is handed out again"                ".template"
 vi "${d}" --apply -y
 has   "and it stays settled"                           "Everything is up to date"
 
+# --- --apply --cc-workflow yes wires CLAUDE.md, not just the documents -------
+# A missing optional block is normally an opt-out the sync must respect, so it
+# never inserts one on its own. An explicit --cc-workflow yes is the opposite of
+# an opt-out: without the block, the workflow document and its agent land with
+# nothing in CLAUDE.md pointing at them.
+d="$(sandbox)"
+vi "${d}" --apply -y
+vi "${d}" --apply -y --cc-workflow yes
+rc_is "--apply --cc-workflow yes on a tracked project succeeds" 0
+if grep -qF '<FEATURE id="cc-workflow">' "${d}/CLAUDE.md"; then
+  ok "--apply --cc-workflow yes adds the CC-Workflow block to CLAUDE.md"
+else
+  ko "--apply --cc-workflow yes adds the CC-Workflow block to CLAUDE.md" "no FEATURE block in CLAUDE.md"
+fi
+vi "${d}" --apply -y
+has   "and the block it added counts as the tool's own" "Everything is up to date"
+hasnt "and is not handed out for review"                ".template"
+
 # --- VIBE_INIT_LANG=zh starts the interface in Chinese ----------------------
 # The interface is translated; the agent prompts are not — they are written for
 # a model, and already ask it to talk to the user in Chinese.

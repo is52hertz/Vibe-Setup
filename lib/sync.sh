@@ -56,6 +56,11 @@ SYNC_LAST_NOTE=""
 # end-of-run prompt can name them instead of pointing at the whole file.
 SYNC_REVIEW_BLOCKS=()
 
+# Optional blocks this run was explicitly asked to turn on ("TAG:id", space
+# separated). A missing optional block is otherwise an opt-out and left alone;
+# set by the entrypoint from a flag like --cc-workflow yes.
+SYNC_REQUESTED_BLOCKS=""
+
 # The <TAG> whose presence marks a managed file as modern format; empty for
 # files the block engine does not edit (a copied file has no format to
 # convert). One line per entry so the mapping stays next to TEMPLATE_FILES.
@@ -160,6 +165,28 @@ _sync_replace_block() {
   return 1
 }
 
+# Append one block of <src> to the end of <dst>. Honors --dry-run.
+# Usage: _sync_append_block <src> <dst> <rel> <tag> [id]
+_sync_append_block() {
+  local src="$1" dst="$2" rel="$3" tag="$4" id="${5:-}"
+  local frag=""
+
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    info "dry-run: add $(block_label "${tag}" "${id}") to ${rel}"
+    return 0
+  fi
+
+  frag="$(mktemp "${TMPDIR:-/tmp}/vibe-init-blk.XXXXXX")" || return 1
+  if extract_block "${src}" "${tag}" "${id}" > "${frag}" \
+      && append_block_if_missing "${dst}" "${tag}" "${id}" "${frag}"; then
+    rm -f "${frag}"
+    info "added $(block_label "${tag}" "${id}") to ${rel}"
+    return 0
+  fi
+  rm -f "${frag}"
+  return 1
+}
+
 # Copy the template over the target. Honors --dry-run and keeps the wording the
 # rest of the tool uses for a copy.
 _sync_copy() {
@@ -182,6 +209,8 @@ _sync_copy() {
 # in the user's file it belongs, and apply mode assembles with every profile
 # present, so guessing would push pruned profiles back into a resolved project.
 # A required one that is missing is reported and handed to the agent instead.
+# The one exception is an optional block this run was explicitly asked to turn
+# on (SYNC_REQUESTED_BLOCKS): it is appended, as the feature's toggle would.
 _sync_blocks() {
   local project_dir="$1" rel="$2" mode="$3"
   local src="${TEMPLATE_DIR}/${rel}" dst="${project_dir}/${rel}"
@@ -219,6 +248,17 @@ _sync_blocks() {
       continue
     fi
     if ! has_block "${dst}" "${tag}" "${id}"; then
+      if [[ " ${SYNC_REQUESTED_BLOCKS} " == *" ${tag}:${id} "* ]]; then
+        forwarded=$(( forwarded + 1 ))
+        if [[ "${mode}" == "apply" ]]; then
+          _sync_append_block "${src}" "${dst}" "${rel}" "${tag}" "${id}" || {
+            warn "could not add $(block_label "${tag}" "${id}") to ${rel}"
+            return 1
+          }
+          state_record_block "${rel}" "${tag}" "${id}" "${th}"
+        fi
+        continue
+      fi
       # An acknowledged local deletion remains local while upstream is unchanged.
       [[ "${bh}" == "${th}" ]] && continue
       block_is_optional "${tag}" && continue
