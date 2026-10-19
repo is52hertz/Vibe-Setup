@@ -414,7 +414,7 @@ if [[ -f "${d}/.vibe-init/manifest" ]]; then
 else
   ko "a scaffold records its state" ".vibe-init/manifest was not written"
 fi
-if grep -qxF "$(printf 'version\t1.2.0')" "${d}/.vibe-init/manifest"; then
+if grep -qxF "$(printf 'version\t1.3.0')" "${d}/.vibe-init/manifest"; then
   ok "the manifest stamps the tool version"
 else
   ko "the manifest stamps the tool version" "$(cat "${d}/.vibe-init/manifest" 2>/dev/null | head -5)"
@@ -459,7 +459,7 @@ if [[ -z "$(find "${d}" -name '*.template' -print -quit)" ]]; then
 else
   ko "an unchanged project leaves no .template on disk" "$(find "${d}" -name '*.template')"
 fi
-has "diagnostics report the tool and the project version" "v1.2.0 (last tool v1.2.0; 0 pending review(s))"
+has "diagnostics report the tool and the project version" "v1.3.0 (last tool v1.3.0; 0 pending review(s))"
 hasre "diagnostics report CLAUDE.md's format"             "CLAUDE.md +.*Modern"
 
 d="$(sandbox)"
@@ -591,6 +591,46 @@ has   "after the agent's round the project is settled" "Everything is up to date
 hasnt "and nothing is handed out again"                ".template"
 vi "${d}" --apply -y
 has   "and it stays settled"                           "Everything is up to date"
+
+# --- --layout hub scaffolds a documents-only hub ------------------------------
+d="$(sandbox)"
+vi "${d}" --layout hub -y
+rc_is "--layout hub scaffolds cleanly" 0
+if grep -qF '<LAYOUT id="hub">' "${d}/AGENTS.md" && ! grep -qF '<PROFILE' "${d}/AGENTS.md"; then
+  ok "a hub AGENTS.md carries the hub rules and no profile"
+else
+  ko "a hub AGENTS.md carries the hub rules and no profile" "$(grep -oE '^<[A-Z_]+[^>]*>' "${d}/AGENTS.md" | tr '\n' ' ')"
+fi
+if [[ -f "${d}/docs/README.md" && -f "${d}/docs/tasks/README.md" && -f "${d}/docs/next.md" \
+      && -f "${d}/docs/handoff.md" && -f "${d}/docs/wiki/overview.md" ]]; then
+  ok "a hub gets the docs skeleton"
+else
+  ko "a hub gets the docs skeleton" "$(cd "${d}" && find docs -type f 2>/dev/null | tr '\n' ' ')"
+fi
+[[ -d "${d}/.git" ]] && ok "a hub is a git repository" || ko "a hub is a git repository" "no .git"
+if grep -qF "$(printf 'layout\thub')" "${d}/.vibe-init/manifest"; then
+  ok "the manifest records the hub layout"
+else
+  ko "the manifest records the hub layout" "$(grep '^layout' "${d}/.vibe-init/manifest")"
+fi
+hasnt "a hub is not offered the test checklist" "Test/templates-test-checklist.html"
+
+d="$(sandbox)"
+vi "${d}" -y
+if grep -qF "$(printf 'layout\tsingle')" "${d}/.vibe-init/manifest" && [[ ! -e "${d}/docs" ]]; then
+  ok "the default layout is single, with no docs skeleton"
+else
+  ko "the default layout is single, with no docs skeleton" "$(grep '^layout' "${d}/.vibe-init/manifest")"
+fi
+
+d="$(sandbox)"
+vi "${d}" --layout hub --profile tool -y
+rc_is "--layout hub refuses a profile" 1
+vi "${d}" --layout hub --trellis yes -y
+rc_is "--layout hub refuses Trellis" 1
+vi "${d}" --layout nested -y
+rc_is "an unknown layout is refused" 1
+has   "and named" "--layout must be single or hub"
 
 # --- --apply --cc-workflow yes wires CLAUDE.md, not just the documents -------
 # A missing optional block is normally an opt-out the sync must respect, so it

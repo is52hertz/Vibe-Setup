@@ -409,6 +409,14 @@ _i18n_zh() {
     "AGENTS.md keeps every profile block for the project's AI to resolve")
       UI_T="AGENTS.md 保留所有 profile 块，交由项目的 AI 决定" ;;
     "next: edit AGENTS.md with real project guidance") UI_T="下一步：在 AGENTS.md 中写入真实的项目指引" ;;
+    "What kind of repository is this?") UI_T="这是什么类型的仓库？" ;;
+    "Single repository") UI_T="单一仓库" ;;
+    "one project, one git repository") UI_T="一个项目，一个 git 仓库" ;;
+    "Hub") UI_T="Hub" ;;
+    "documents only; plans the repositories nested inside it") UI_T="只放文档；规划嵌在其中的各个仓库" ;;
+    "AGENTS.md assembled for a hub: the hub rules, no profile") UI_T="AGENTS.md 已按 hub 组装：带 hub 规则，不带 profile" ;;
+    "next: describe the project in AGENTS.md and docs/wiki/overview.md")
+      UI_T="下一步：在 AGENTS.md 和 docs/wiki/overview.md 中描述这个项目" ;;
 
     *) _i18n_zh_pattern ;;
   esac
