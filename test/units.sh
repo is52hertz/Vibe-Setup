@@ -1218,6 +1218,18 @@ is "Chinese translates the resolve hint, keeping the command" \
 UI_WIDTH=0; _ui_width "abc"; is "ASCII is one column a character" "${UI_WIDTH}" "3"
 _ui_width "同步模板"; is "CJK is two columns a character" "${UI_WIDTH}" "8"
 _ui_width "a — b"; is "a dash is one column" "${UI_WIDTH}" "5"
+_ui_width ""; is "an empty string has no columns" "${UI_WIDTH}" "0"
+_ui_width "a同步😀"; is "mixed UTF-8 keeps the width rule" "${UI_WIDTH}" "7"
+_ui_width "한é"; is "other UTF-8 characters keep the width rule" "${UI_WIDTH}" "2"
+for width_locale in C en_US.UTF-8; do
+  out="$(LC_ALL="${width_locale}" "$BASH" -c '
+    set -euo pipefail
+    . "'"${REPO_ROOT}"'/lib/i18n.sh"
+    _ui_width "a同步😀"
+    printf "%s:%s" "${UI_WIDTH}" "${LC_ALL}"
+  ')"
+  is "width preserves ${width_locale} and its result" "${out}" "7:${width_locale}"
+done
 is "a CJK cell pads by display width" "$(_ui_cell "同步" 6)|" "同步  |"
 
 # The selectors run in $(...): a flip there has to reach the shell that prints

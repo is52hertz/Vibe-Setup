@@ -78,23 +78,41 @@ _t() {
 }
 
 # Display width of a string, into UI_WIDTH: a CJK character takes two columns.
-# Counted on the UTF-8 bytes under LC_ALL=C (local to this function, which Bash
-# 3.2 restores on return), so the answer does not depend on the user's locale:
-# lead bytes E3-E9 and EF open the CJK and full-width ranges (two columns);
-# every other multi-byte character — the dashes, arrows and ticks the tool
-# prints — takes one.
+# Lead bytes E3-E9 and EF open the CJK and full-width ranges (two columns);
+# other three-byte characters take one, and four-byte characters take two.
+# Bash 3.2's printf returns a signed first byte rather than a Unicode code point.
 UI_WIDTH=0
 _ui_width() {
-  local LC_ALL=C
-  local s="$1" t=""
-  local bytes=0 n2=0 n3=0 n4=0 wide=0
+  local s="$1" sample="中" code=0 byte=0 columns=0
 
-  bytes="${#s}"
-  t="${s//[^$'\xc0'-$'\xdf']/}"; n2="${#t}"
-  t="${s//[^$'\xe0'-$'\xef']/}"; n3="${#t}"
-  t="${s//[^$'\xf0'-$'\xf7']/}"; n4="${#t}"
-  t="${s//[^$'\xe3'-$'\xe9'$'\xef']/}"; wide="${#t}"
-  UI_WIDTH=$(( bytes - n2 - 2 * n3 - 3 * n4 + wide + n4 ))
+  UI_WIDTH=0
+  while [[ -n "${s}" ]]; do
+    printf -v code '%d' "'${s:0:1}"
+    byte=$(( code & 255 ))
+    if [[ "${#sample}" -eq 1 ]]; then
+      if (( code < 0 )); then
+        if (( (byte >= 0xe3 && byte <= 0xe9) || byte == 0xef || (byte >= 0xf0 && byte <= 0xf7) )); then
+          columns=2
+        else
+          columns=1
+        fi
+      elif (( code >= 0x10000 || (code >= 0x3000 && code <= 0x9fff) || (code >= 0xf000 && code <= 0xffff) )); then
+        columns=2
+      else
+        columns=1
+      fi
+    elif (( byte >= 0xc0 && byte <= 0xdf )); then
+      columns=0
+    elif (( (byte >= 0xe0 && byte <= 0xe2) || (byte >= 0xea && byte <= 0xee) || (byte >= 0xf0 && byte <= 0xf7) )); then
+      columns=-1
+    elif (( (byte >= 0xe3 && byte <= 0xe9) || byte == 0xef )); then
+      columns=0
+    else
+      columns=1
+    fi
+    UI_WIDTH=$(( UI_WIDTH + columns ))
+    s="${s#?}"
+  done
 }
 
 # Match the string being translated against a regex; captures in BASH_REMATCH.
