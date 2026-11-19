@@ -335,7 +335,7 @@ else
 fi
 
 # And the messages themselves still render, with the wording scripts match on.
-levels="$(NO_COLOR=1 bash -c '
+levels="$(NO_COLOR=1 "$BASH" -c '
   set -euo pipefail
   . "'"${REPO_ROOT}"'/lib/ui.sh"
   ui_log log; ui_ok ok; ui_warn warn; ui_error err
@@ -386,7 +386,7 @@ is "an unknown level falls back to dim" "$(UI_DIM=D _ui_state_color nonsense)" "
 # Plain mode has to render exactly what ui_kv would have printed. Everything
 # that greps this tool's output — the whole dry-run suite included — reads that
 # string, so the colored version may not change a single byte of it.
-plain_row="$(NO_COLOR=1 bash -c '
+plain_row="$(NO_COLOR=1 "$BASH" -c '
   set -euo pipefail
   . "'"${REPO_ROOT}"'/lib/ui.sh"
   ui_kv_state "Trellis" ok "Active" "Project v1 / CLI v2"
@@ -396,7 +396,7 @@ has "a plain state row keeps the state and detail together" "${plain_row}" "Acti
 has "a plain state row with no detail is just the word"     "${plain_row}" "Disabled"
 hasnt "a plain state row carries no parens of its own"      "${plain_row}" "Disabled ("
 
-rich_row="$(bash -c '
+rich_row="$("$BASH" -c '
   set -euo pipefail
   . "'"${REPO_ROOT}"'/lib/ui.sh"
   UI_RICH=1; UI_DIM="<d>"; UI_RESET="<r>"; UI_GREEN="<g>"; UI_G_BAR="|"
@@ -442,7 +442,7 @@ chmod +x "${FAKE_TRELLIS}/trellis"
 mkdir -p "${WORK}/trproj/.trellis"
 
 trellis_update_run() {
-  PATH="${FAKE_TRELLIS}:${PATH}" bash -c '
+  PATH="${FAKE_TRELLIS}:${PATH}" "$BASH" -c '
     set -uo pipefail
     . "'"${REPO_ROOT}"'/lib/ui.sh"
     . "'"${REPO_ROOT}"'/lib/trellis.sh"
@@ -536,7 +536,7 @@ ASSUME_DEFAULTS=0
 # The hint itself must not move as the selection travels — only the active note
 # appears — so the menu does not shuffle sideways under the cursor.
 draw_menu() {
-  bash -c '
+  "$BASH" -c '
     set -euo pipefail
     . "'"${REPO_ROOT}"'/lib/ui.sh"
     . "'"${REPO_ROOT}"'/lib/prompt.sh"
@@ -567,7 +567,7 @@ fi
 
 # And "off" is readable rather than hidden: a legitimate state must not be dim,
 # which is the one thing the reader is there to check.
-off_row="$(bash -c '
+off_row="$("$BASH" -c '
   set -euo pipefail
   . "'"${REPO_ROOT}"'/lib/ui.sh"
   . "'"${REPO_ROOT}"'/lib/prompt.sh"
@@ -582,7 +582,7 @@ is    "neutral carries no color at all" "$(UI_DIM=D UI_GREEN=G _ui_state_color n
 # Resident text is always dim, even carrying a level. It never varies, so it has
 # no news to deliver; all colour belongs to the part that changes. A row that
 # coloured its resident text would compete with its own reveal.
-sync_row="$(bash -c '
+sync_row="$("$BASH" -c '
   set -euo pipefail
   . "'"${REPO_ROOT}"'/lib/ui.sh"
   . "'"${REPO_ROOT}"'/lib/prompt.sh"
@@ -608,7 +608,7 @@ is "a three-field record has no note"     "${PROMPT_ACTIVE}"     ""
 
 # There is no cursor in the no-color list, so the state cannot be hidden behind
 # one: it shows on every row instead.
-plain_menu="$(NO_COLOR=1 bash -c '
+plain_menu="$(NO_COLOR=1 "$BASH" -c '
   set -euo pipefail
   . "'"${REPO_ROOT}"'/lib/ui.sh"
   . "'"${REPO_ROOT}"'/lib/prompt.sh"
@@ -670,7 +670,7 @@ is    "a real level passes through"           "$(reveal_level todo)" "todo"
 # Trellis reveals what opening the submenu would show, so the versions can be
 # read without a trip in and back out.
 trellis_note_for() {
-  PATH="${FAKE_TRELLIS}:${PATH}" bash -c '
+  PATH="${FAKE_TRELLIS}:${PATH}" "$BASH" -c '
     set -uo pipefail
     SCRIPT_DIR="'"${WORK}"'"
     . "'"${REPO_ROOT}"'/lib/ui.sh"
@@ -752,7 +752,7 @@ done
 is "every ui_* the tool calls is defined somewhere in lib/" "${ui_missing% }" ""
 
 # --- the info level is dim, and the copy block is not in the gutter ---------
-rich_info="$(bash -c '
+rich_info="$("$BASH" -c '
   set -euo pipefail
   . "'"${REPO_ROOT}"'/lib/ui.sh"
   UI_RICH=1; UI_DIM="<dim>"; UI_RESET="<off>"; UI_G_BAR="|"
@@ -760,14 +760,14 @@ rich_info="$(bash -c '
 ' 2>&1)"
 has "rich info is drawn dim" "${rich_info}" "<dim>copied a file<off>"
 
-plain_info="$(NO_COLOR=1 bash -c '
+plain_info="$(NO_COLOR=1 "$BASH" -c '
   set -euo pipefail
   . "'"${REPO_ROOT}"'/lib/ui.sh"
   ui_info "copied a file"
 ' 2>&1)"
 is "plain info keeps the bare wording" "${plain_info}" "[vibe-init] copied a file"
 
-plain_fence="$(NO_COLOR=1 bash -c '
+plain_fence="$(NO_COLOR=1 "$BASH" -c '
   set -euo pipefail
   . "'"${REPO_ROOT}"'/lib/ui.sh"
   ui_copy_open "suggested prompt for your AI agent"
@@ -777,7 +777,7 @@ has   "the copy block announces itself"     "${plain_fence}" "suggested prompt f
 hasnt "the copy block never hangs off the gutter" "${plain_fence}" "|"
 hasnt "the copy block carries no plain prefix"    "${plain_fence}" "[vibe-init]"
 
-rich_fence="$(bash -c '
+rich_fence="$("$BASH" -c '
   set -euo pipefail
   . "'"${REPO_ROOT}"'/lib/ui.sh"
   UI_RICH=1; UI_DIM="<dim>"; UI_RESET="<off>"; UI_RULE="-"
@@ -1054,7 +1054,7 @@ chmod +x "${TR_BIN}/trellis"
 trellis_ops() {
   rm -f "${WORK}/tr-selected"
   TR_PROJ="$1" TR_ANSWER="$2" TR_SELECT="$3" TR_WORK="${WORK}" TR_REPO="${REPO_ROOT}" \
-    TR_DECLINE="${TR_DECLINE:-0}" PATH="${TR_BIN}:${PATH}" bash -c '
+    TR_DECLINE="${TR_DECLINE:-0}" PATH="${TR_BIN}:${PATH}" "$BASH" -c '
     set -uo pipefail
     SCRIPT_DIR="${TR_WORK}"
     TEMPLATE_ROOT="${TR_REPO}/templates"
